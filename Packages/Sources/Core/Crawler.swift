@@ -88,8 +88,25 @@ extension Core {
                     stats = CrawlStatistics(startTime: startTime)
                 }
 
-                // Initialize queue
-                queue = [(url: configuration.startURL, depth: 0)]
+                // Initialize queue — seed from technologies.json for Apple docs root
+                let isAppleDocs = configuration.startURL.host?.contains("developer.apple.com") == true
+                let isDocsRoot = configuration.startURL.path == "/documentation"
+                    || configuration.startURL.path == "/documentation/"
+
+                if isAppleDocs && isDocsRoot {
+                    do {
+                        logInfo("📋 Fetching technology index for complete framework coverage...")
+                        let frameworkURLs = try await TechnologiesIndexFetcher.fetchFrameworkURLs()
+                        queue = frameworkURLs.map { (url: $0, depth: 0) }
+                        logInfo("   ✅ Seeded queue with \(frameworkURLs.count) framework root URLs")
+                    } catch {
+                        logInfo("   ⚠️ Failed to fetch technology index: \(error.localizedDescription)")
+                        logInfo("   ⚠️ Falling back to start URL only")
+                        queue = [(url: configuration.startURL, depth: 0)]
+                    }
+                } else {
+                    queue = [(url: configuration.startURL, depth: 0)]
+                }
 
                 logInfo("🚀 Starting new crawl")
             }
