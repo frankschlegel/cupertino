@@ -22,7 +22,7 @@ extension Shared {
             maxDepth: Int = 15,
             outputDirectory: URL = Shared.Constants.defaultDocsDirectory,
             logFile: URL? = nil,
-            requestDelay: TimeInterval = 0.5,
+            requestDelay: TimeInterval = 0.05,
             retryAttempts: Int = 3,
             useJSONAPI: Bool = false
         ) {
