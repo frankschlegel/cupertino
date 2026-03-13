@@ -88,8 +88,46 @@ extension Search {
             // Index Swift Packages catalog
             try await indexPackagesCatalog(onProgress: onProgress)
 
+            // Register framework synonyms for common alternate names
+            try await registerFrameworkSynonyms()
+
             let count = try await searchIndex.documentCount()
             logInfo("✅ Search index built: \(count) documents")
+        }
+
+        /// Register synonyms so common alternate names resolve to the correct framework
+        private func registerFrameworkSynonyms() async throws {
+            let synonyms: [(identifier: String, synonyms: String)] = [
+                ("corenfc", "nfc"),
+                ("journalingsuggestions", "journaling"),
+                ("corebluetooth", "bluetooth"),
+                ("corelocation", "location"),
+                ("coredata", "data"),
+                ("coremotion", "motion"),
+                ("coregraphics", "graphics"),
+                ("coreimage", "imageprocessing"),
+                ("coremedia", "media"),
+                ("coreaudio", "audio"),
+                ("coreml", "ml,machinelearning"),
+                ("corespotlight", "spotlight"),
+                ("coretext", "text"),
+                ("corevideo", "video"),
+                ("corehaptics", "haptics"),
+                ("corewlan", "wifi,wlan"),
+                ("coretelephony", "telephony"),
+                ("metalperformanceshadersgraph", "mpsgraph"),
+                ("avfoundation", "av"),
+                ("scenekit", "scene"),
+                ("spritekit", "sprite"),
+                ("groupactivities", "shareplay"),
+            ]
+
+            for entry in synonyms {
+                try await searchIndex.updateFrameworkSynonyms(
+                    identifier: entry.identifier,
+                    synonyms: entry.synonyms
+                )
+            }
         }
 
         // MARK: - Private Methods

@@ -27,7 +27,7 @@ extension Search {
         /// - 7: Previous version
         /// - 8: Added attributes column to docs_structured for @attribute indexing
         /// - 9: Added doc_symbols, doc_imports tables for SwiftSyntax AST indexing (#81)
-        public static let schemaVersion: Int32 = 9
+        public static let schemaVersion: Int32 = 10
 
         private var database: OpaquePointer?
         private let dbPath: URL
@@ -165,6 +165,25 @@ extension Search {
 
             // Version 8 -> 9: New tables created with IF NOT EXISTS in createTables()
             // No explicit migration needed for doc_symbols, doc_symbols_fts, doc_imports
+
+            if currentVersion < 10 {
+                // Version 9 -> 10: Added synonyms column to framework_aliases
+                try await migrateToVersion10()
+            }
+        }
+
+        private func migrateToVersion10() async throws {
+            guard let database else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            let sql = "ALTER TABLE framework_aliases ADD COLUMN synonyms TEXT;"
+
+            var errorPointer: UnsafeMutablePointer<CChar>?
+            defer { sqlite3_free(errorPointer) }
+
+            // Ignore error if column already exists
+            sqlite3_exec(database, sql, nil, nil, &errorPointer)
         }
 
         private func migrateToVersion7() async throws {
@@ -344,10 +363,12 @@ extension Search {
             -- identifier: appintents (lowercase, URL path, folder name)
             -- import_name: AppIntents (CamelCase, Swift import statement)
             -- display_name: App Intents (human-readable, from JSON module field)
+            -- synonyms: comma-separated alternate names (e.g., "nfc" for corenfc)
             CREATE TABLE IF NOT EXISTS framework_aliases (
                 identifier TEXT PRIMARY KEY,
                 import_name TEXT NOT NULL,
-                display_name TEXT NOT NULL
+                display_name TEXT NOT NULL,
+                synonyms TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_alias_import ON framework_aliases(import_name);
@@ -3471,6 +3492,30 @@ extension Search {
             _ = sqlite3_step(statement)
         }
 
+        /// Update synonyms for an existing framework alias
+        /// - Parameters:
+        ///   - identifier: The framework identifier (e.g., "corenfc")
+        ///   - synonyms: Comma-separated alternate names (e.g., "nfc")
+        public func updateFrameworkSynonyms(identifier: String, synonyms: String) async throws {
+            guard let database else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            let sql = "UPDATE framework_aliases SET synonyms = ? WHERE identifier = ?;"
+
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                return
+            }
+
+            sqlite3_bind_text(statement, 1, (synonyms as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (identifier as NSString).utf8String, -1, nil)
+
+            _ = sqlite3_step(statement)
+        }
+
         /// Resolve any framework input (identifier, import name, or display name) to identifier
         /// - Parameter input: Any of the three forms (e.g., "appintents", "AppIntents", "App Intents")
         /// - Returns: The identifier form (e.g., "appintents"), or nil if not found
@@ -3516,6 +3561,25 @@ extension Search {
             if sqlite3_step(statement) == SQLITE_ROW,
                let ptr = sqlite3_column_text(statement, 0) {
                 return String(cString: ptr)
+            }
+
+            // Third try: match on synonyms (comma-separated alternate names)
+            let synonymSql = """
+            SELECT identifier FROM framework_aliases
+            WHERE synonyms IS NOT NULL
+            AND (',' || LOWER(synonyms) || ',') LIKE '%,' || ? || ',%'
+            LIMIT 1;
+            """
+
+            var synStmt: OpaquePointer?
+            defer { sqlite3_finalize(synStmt) }
+
+            if sqlite3_prepare_v2(database, synonymSql, -1, &synStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(synStmt, 1, (normalizedInput as NSString).utf8String, -1, nil)
+                if sqlite3_step(synStmt) == SQLITE_ROW,
+                   let ptr = sqlite3_column_text(synStmt, 0) {
+                    return String(cString: ptr)
+                }
             }
 
             // Fallback: return normalized input (might be a valid framework not in alias table yet)
