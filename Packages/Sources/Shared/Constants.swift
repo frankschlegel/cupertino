@@ -159,10 +159,10 @@ extension Shared {
             public static let version = "0.9.1"
 
             /// Database version - separate from CLI version, only bump when schema/content changes
-            public static let databaseVersion = "0.8.2"
+            public static let databaseVersion = "0.9.0"
 
             /// Approximate database zip file size for progress display when Content-Length is unknown.
-            /// NOTE: Update this after each database release (current: v0.8.2 ~400MB)
+            /// NOTE: Update this after each database release (current: v0.9.0 ~400MB)
             public static let approximateZipSize: Int64 = 400 * 1024 * 1024
         }
 
