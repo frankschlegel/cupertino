@@ -134,7 +134,7 @@ cupertino serve
 
 ```bash
 # Download Apple documentation (~12+ days for 301,000+ pages)
-# Takes time due to 0.5s default delay between requests to respect Apple's servers
+# Takes time due to 0.05s default delay between requests
 cupertino fetch --type docs --max-pages 15000
 
 # Download Swift Evolution proposals (~2-5 minutes)
@@ -506,7 +506,7 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
 
 - **Resumable**: Continue interrupted crawls from saved state
 - **Change Detection**: Skip unchanged pages on updates
-- **Respectful**: 0.5s default delay between requests (configurable)
+- **Respectful**: 0.05s default delay between requests (configurable)
 - **Deduplication**: Automatic URL queue management
 - **Priority Queues**: Important content fetched first
 
@@ -644,8 +644,8 @@ log stream --predicate 'subsystem == "com.cupertino"'
 
 ### Why Crawling Takes 12+ Days
 
-The crawler respects Apple's servers with a **0.5 second default delay between each request** (configurable):
-- 301,000 pages × 0.5s = 150,500 seconds (~42 hours minimum)
+The crawler uses a **0.05 second default delay between each request** (configurable):
+- 301,000 pages × 0.05s = ~4.2 hours minimum
 - Plus page rendering, parsing, and saving time
 - Crawl must reach depth 21+ to get all documentation
 - **Total: ~12+ days for initial full crawl**
