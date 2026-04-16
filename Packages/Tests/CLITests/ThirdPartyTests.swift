@@ -11,7 +11,7 @@ struct ThirdPartyTests {
         let manager = ThirdPartyManager(storeURL: Self.testDirectory().appendingPathComponent("third-party"))
 
         do {
-            _ = try await manager.add(sourceInput: "https://github.com/pointfreeco/swift-composable-architecture")
+            _ = try await manager.add(sourceInput: "https://github.com/acme/acme-routing")
             Issue.record("Expected add() to reject GitHub source without @ref")
         } catch let error as ThirdPartyManagerError {
             switch error {
@@ -158,18 +158,18 @@ struct ThirdPartyTests {
             installs: [
                 .init(
                     id: "src-test",
-                    identityKey: "github:pointfreeco/swift-composable-architecture",
+                    identityKey: "github:acme/acme-routing",
                     sourceKind: "github",
-                    originalSourceInput: "https://github.com/pointfreeco/swift-composable-architecture@1.25.5",
-                    displaySource: "https://github.com/pointfreeco/swift-composable-architecture",
-                    provenance: "pointfreeco/swift-composable-architecture@1.25.5",
-                    framework: "swift-composable-architecture",
+                    originalSourceInput: "https://github.com/acme/acme-routing@1.25.5",
+                    displaySource: "https://github.com/acme/acme-routing",
+                    provenance: "acme/acme-routing@1.25.5",
+                    framework: "acme-routing",
                     uriPrefix: "packages://third-party/src-test/",
                     projectPrefix: "tp-src-test-",
                     reference: "1.25.5",
                     localPath: nil,
-                    owner: "pointfreeco",
-                    repo: "swift-composable-architecture",
+                    owner: "acme",
+                    repo: "acme-routing",
                     snapshotHash: "deadbeef",
                     docsIndexed: 0,
                     sampleProjectsIndexed: 0,
@@ -181,9 +181,9 @@ struct ThirdPartyTests {
         )
 
         let manager = ThirdPartyManager(storeURL: storeDir)
-        let removed = try await manager.remove(sourceInput: "https://github.com/pointfreeco/swift-composable-architecture")
+        let removed = try await manager.remove(sourceInput: "https://github.com/acme/acme-routing")
 
-        #expect(removed.provenance == "pointfreeco/swift-composable-architecture@1.25.5")
+        #expect(removed.provenance == "acme/acme-routing@1.25.5")
         let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
         #expect(installsAfterRemove.isEmpty)
     }

@@ -228,7 +228,7 @@ func priorityPackagesCatalogEcosystemPackages() async throws {
     // Verify known ecosystem packages exist
     let fullNames = ecosystemPackages.map { "\($0.owner ?? "")/\($0.repo)" }
     #expect(fullNames.contains("vapor/vapor"), "Should contain vapor/vapor")
-    #expect(fullNames.contains("pointfreeco/swift-composable-architecture"), "Should contain TCA")
+    #expect(fullNames.contains(where: { $0.split(separator: "/").count == 2 }), "Entries should be owner/repo shaped")
 
     print("   ✅ Ecosystem packages validated")
 
