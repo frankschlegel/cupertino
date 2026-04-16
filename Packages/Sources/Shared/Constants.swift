@@ -26,6 +26,7 @@ extension Shared {
             public static let sampleCode = "sample-code"
             public static let archive = "archive"
             public static let hig = "hig"
+            public static let thirdParty = "third-party"
         }
 
         // MARK: - File Names
@@ -50,6 +51,9 @@ extension Shared {
 
             /// Samples database file
             public static let samplesDatabase = "samples.db"
+
+            /// Third-party ingestion manifest
+            public static let thirdPartyManifest = "manifest.json"
 
             // MARK: Package Data Files
 
@@ -138,6 +142,26 @@ extension Shared {
         /// Default search database: ~/.cupertino/search.db
         public static var defaultSearchDatabase: URL {
             defaultBaseDirectory.appendingPathComponent(FileName.searchDatabase)
+        }
+
+        /// Default third-party base directory: ~/.cupertino/third-party
+        public static var defaultThirdPartyDirectory: URL {
+            defaultBaseDirectory.appendingPathComponent(Directory.thirdParty)
+        }
+
+        /// Default third-party search database: ~/.cupertino/third-party/search.db
+        public static var defaultThirdPartySearchDatabase: URL {
+            defaultThirdPartyDirectory.appendingPathComponent(FileName.searchDatabase)
+        }
+
+        /// Default third-party samples database: ~/.cupertino/third-party/samples.db
+        public static var defaultThirdPartySamplesDatabase: URL {
+            defaultThirdPartyDirectory.appendingPathComponent(FileName.samplesDatabase)
+        }
+
+        /// Default third-party manifest path: ~/.cupertino/third-party/manifest.json
+        public static var defaultThirdPartyManifest: URL {
+            defaultThirdPartyDirectory.appendingPathComponent(FileName.thirdPartyManifest)
         }
 
         // MARK: - Application Info

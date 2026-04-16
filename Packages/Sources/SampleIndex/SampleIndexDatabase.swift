@@ -1030,6 +1030,39 @@ extension SampleIndex {
                 sqlite3_finalize(stmt4)
             }
         }
+
+        /// Delete all projects whose IDs start with the provided prefix.
+        /// Returns the number of deleted projects.
+        public func deleteProjects(withIdPrefix prefix: String) async throws -> Int {
+            guard let database else {
+                throw SampleIndex.Error.databaseNotInitialized
+            }
+
+            let likePattern = "\(prefix)%"
+            let selectSQL = "SELECT id FROM projects WHERE id LIKE ?;"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, selectSQL, -1, &statement, nil) == SQLITE_OK else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SampleIndex.Error.prepareFailed("Project prefix select: \(errorMessage)")
+            }
+
+            sqlite3_bind_text(statement, 1, (likePattern as NSString).utf8String, -1, nil)
+
+            var projectIDs: [String] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let idPtr = sqlite3_column_text(statement, 0) {
+                    projectIDs.append(String(cString: idPtr))
+                }
+            }
+
+            for projectID in projectIDs {
+                try await deleteProject(id: projectID)
+            }
+
+            return projectIDs.count
+        }
     }
 }
 

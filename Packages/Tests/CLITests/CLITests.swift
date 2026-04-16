@@ -15,11 +15,14 @@ struct CommandRegistrationTests {
     func subcommandsRegistered() {
         let config = Cupertino.configuration
 
-        #expect(config.subcommands.count == 13)
+        #expect(config.subcommands.count == 16)
         #expect(config.subcommands.contains { $0 == SetupCommand.self })
         #expect(config.subcommands.contains { $0 == FetchCommand.self })
         #expect(config.subcommands.contains { $0 == SaveCommand.self })
         #expect(config.subcommands.contains { $0 == IndexCommand.self })
+        #expect(config.subcommands.contains { $0 == AddCommand.self })
+        #expect(config.subcommands.contains { $0 == UpdateCommand.self })
+        #expect(config.subcommands.contains { $0 == RemoveCommand.self })
         #expect(config.subcommands.contains { $0 == ServeCommand.self })
         #expect(config.subcommands.contains { $0 == SearchCommand.self })
         #expect(config.subcommands.contains { $0 == ReadCommand.self })

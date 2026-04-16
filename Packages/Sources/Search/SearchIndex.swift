@@ -3923,6 +3923,108 @@ extension Search {
             }
         }
 
+        /// Delete all indexed documents whose URI starts with the provided prefix.
+        /// Returns the number of metadata rows removed.
+        public func deleteDocuments(withURIPrefix uriPrefix: String) async throws -> Int {
+            guard let database else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            let likePattern = "\(uriPrefix)%"
+            let deletedCount = try countDocuments(matchingURIPattern: likePattern, database: database)
+
+            if deletedCount == 0 {
+                return 0
+            }
+
+            // Delete in dependency order. doc_code_fts uses rowid linkage to doc_code_examples.
+            try executeDelete(
+                """
+                DELETE FROM doc_code_fts
+                WHERE rowid IN (
+                    SELECT id FROM doc_code_examples WHERE doc_uri LIKE ?
+                );
+                """,
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM doc_code_examples WHERE doc_uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM doc_imports WHERE doc_uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM doc_symbols WHERE doc_uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM docs_structured WHERE uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM docs_fts WHERE uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+            try executeDelete(
+                "DELETE FROM docs_metadata WHERE uri LIKE ?;",
+                argument: likePattern,
+                database: database
+            )
+
+            return deletedCount
+        }
+
+        private func countDocuments(
+            matchingURIPattern pattern: String,
+            database: OpaquePointer
+        ) throws -> Int {
+            let sql = "SELECT COUNT(*) FROM docs_metadata WHERE uri LIKE ?;"
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SearchError.prepareFailed("Count docs by URI prefix: \(errorMessage)")
+            }
+
+            sqlite3_bind_text(statement, 1, (pattern as NSString).utf8String, -1, nil)
+
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                return 0
+            }
+
+            return Int(sqlite3_column_int(statement, 0))
+        }
+
+        private func executeDelete(
+            _ sql: String,
+            argument: String,
+            database: OpaquePointer
+        ) throws {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SearchError.prepareFailed("Delete by URI prefix: \(errorMessage)")
+            }
+
+            sqlite3_bind_text(statement, 1, (argument as NSString).utf8String, -1, nil)
+
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SearchError.sqliteError("Delete by URI prefix failed: \(errorMessage)")
+            }
+        }
+
         // MARK: - Helper Methods
 
         /// Detect programming language from content using heuristics
