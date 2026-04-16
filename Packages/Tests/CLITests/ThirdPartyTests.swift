@@ -73,6 +73,38 @@ struct ThirdPartyTests {
         #expect(installsAfterRemove.isEmpty)
     }
 
+    @Test("Local source update changes provenance when only Sources files change")
+    func localSourceOnlyChangeUpdatesProvenance() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("library-source")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "delta")
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+
+        let firstAdd = try await manager.add(sourceInput: sourceDir.path)
+        #expect(firstAdd.docsIndexed >= 2)
+        #expect(firstAdd.sampleProjectsIndexed == 0)
+        #expect(firstAdd.sampleFilesIndexed == 0)
+
+        let sourceFile = sourceDir.appendingPathComponent("Sources/FixtureLib/Feature.swift")
+        try """
+        public struct Feature {
+            public init() {}
+            public let value = "updated"
+        }
+        """
+        .write(to: sourceFile, atomically: true, encoding: .utf8)
+
+        let updated = try await manager.update(sourceInput: sourceDir.path)
+        #expect(updated.docsIndexed == firstAdd.docsIndexed)
+        #expect(updated.sampleProjectsIndexed == firstAdd.sampleProjectsIndexed)
+        #expect(updated.sampleFilesIndexed == firstAdd.sampleFilesIndexed)
+        #expect(updated.provenance != firstAdd.provenance)
+    }
+
     @Test("Automatic DocC build requires --allow-build when non-interactive")
     func nonInteractiveBuildGate() async throws {
         let testDir = Self.testDirectory()
@@ -349,6 +381,50 @@ private extension ThirdPartyTests {
         try "# Fixture \(marker)\n\nfallback-readme\n"
             .write(to: sourceDir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         try "# Guide \(marker)\n\nfallback-guide\n"
+            .write(to: sourceDir.appendingPathComponent("docs/guide.md"), atomically: true, encoding: .utf8)
+    }
+
+    static func makeSourceTrackingFixture(at sourceDir: URL, marker: String) throws {
+        let fileManager = FileManager.default
+
+        try fileManager.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: sourceDir.appendingPathComponent("Sources/FixtureLib"),
+            withIntermediateDirectories: true
+        )
+        try fileManager.createDirectory(at: sourceDir.appendingPathComponent("docs"), withIntermediateDirectories: true)
+
+        let packageSwift = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "FixtureLib",
+            products: [
+                .library(name: "FixtureLib", targets: ["FixtureLib"])
+            ],
+            targets: [
+                .target(name: "FixtureLib")
+            ]
+        )
+        """
+
+        let source = """
+        public struct Feature {
+            public init() {}
+            public let value = "\(marker)"
+        }
+        """
+
+        try packageSwift.write(to: sourceDir.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        try source.write(
+            to: sourceDir.appendingPathComponent("Sources/FixtureLib/Feature.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "# Fixture \(marker)\n\nsource-tracking-\(marker)\n"
+            .write(to: sourceDir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "# Guide \(marker)\n\nsource-tracking-guide-\(marker)\n"
             .write(to: sourceDir.appendingPathComponent("docs/guide.md"), atomically: true, encoding: .utf8)
     }
 
