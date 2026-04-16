@@ -387,9 +387,8 @@ struct ThirdPartyManager {
         process.standardError = pipe
 
         try process.run()
-        process.waitUntilExit()
-
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw ThirdPartyManagerError.commandFailed(
                 ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
@@ -993,16 +992,24 @@ struct ThirdPartyManager {
         sourceRoot: URL
     ) throws -> [SnapshotHashRecord] {
         var records: [SnapshotHashRecord] = []
+        var seenPaths: Set<String> = []
 
         for markdownFile in markdownFiles {
             if let data = try? Data(contentsOf: markdownFile) {
-                let hash = HashUtilities.sha256(of: data)
-                records.append(SnapshotHashRecord(
+                appendSnapshotHashRecord(
                     path: "docs/\(relativePath(from: markdownFile, to: sourceRoot))",
-                    hash: hash
-                ))
+                    data: data,
+                    records: &records,
+                    seenPaths: &seenPaths
+                )
             }
         }
+
+        try collectSourceSnapshotHashRecords(
+            sourceRoot: sourceRoot,
+            records: &records,
+            seenPaths: &seenPaths
+        )
 
         for sampleRoot in sampleRoots {
             guard let enumerator = fileManager.enumerator(
@@ -1024,15 +1031,137 @@ struct ThirdPartyManager {
                 }
 
                 if let data = try? Data(contentsOf: fileURL) {
-                    records.append(SnapshotHashRecord(
+                    appendSnapshotHashRecord(
                         path: "samples/\(pathFromRoot)",
-                        hash: HashUtilities.sha256(of: data)
-                    ))
+                        data: data,
+                        records: &records,
+                        seenPaths: &seenPaths
+                    )
                 }
             }
         }
 
         return records
+    }
+
+    private func collectSourceSnapshotHashRecords(
+        sourceRoot: URL,
+        records: inout [SnapshotHashRecord],
+        seenPaths: inout Set<String>
+    ) throws {
+        let packageManifest = sourceRoot.appendingPathComponent("Package.swift")
+        if shouldIncludeInSourceSnapshot(fileURL: packageManifest),
+           let data = try? Data(contentsOf: packageManifest) {
+            appendSnapshotHashRecord(
+                path: "source/\(relativePath(from: packageManifest, to: sourceRoot))",
+                data: data,
+                records: &records,
+                seenPaths: &seenPaths
+            )
+        }
+
+        let packageResolved = sourceRoot.appendingPathComponent("Package.resolved")
+        if shouldIncludeInSourceSnapshot(fileURL: packageResolved),
+           let data = try? Data(contentsOf: packageResolved) {
+            appendSnapshotHashRecord(
+                path: "source/\(relativePath(from: packageResolved, to: sourceRoot))",
+                data: data,
+                records: &records,
+                seenPaths: &seenPaths
+            )
+        }
+
+        try collectSourceSnapshotHashRecords(
+            at: sourceRoot.appendingPathComponent("Sources"),
+            sourceRoot: sourceRoot,
+            records: &records,
+            seenPaths: &seenPaths
+        )
+
+        for doccDirectory in try findDirectories(withExtension: "docc", under: sourceRoot) {
+            try collectSourceSnapshotHashRecords(
+                at: doccDirectory,
+                sourceRoot: sourceRoot,
+                records: &records,
+                seenPaths: &seenPaths
+            )
+        }
+    }
+
+    private func collectSourceSnapshotHashRecords(
+        at directory: URL,
+        sourceRoot: URL,
+        records: inout [SnapshotHashRecord],
+        seenPaths: inout Set<String>
+    ) throws {
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for case let fileURL as URL in enumerator where shouldIncludeInSourceSnapshot(fileURL: fileURL) {
+            guard let data = try? Data(contentsOf: fileURL) else {
+                continue
+            }
+            appendSnapshotHashRecord(
+                path: "source/\(relativePath(from: fileURL, to: sourceRoot))",
+                data: data,
+                records: &records,
+                seenPaths: &seenPaths
+            )
+        }
+    }
+
+    private func shouldIncludeInSourceSnapshot(fileURL: URL) -> Bool {
+        guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true else {
+            return false
+        }
+        let size = values.fileSize ?? 0
+        return size < Shared.Constants.Limit.maxIndexableFileSize
+    }
+
+    private func appendSnapshotHashRecord(
+        path: String,
+        data: Data,
+        records: inout [SnapshotHashRecord],
+        seenPaths: inout Set<String>
+    ) {
+        guard seenPaths.insert(path).inserted else {
+            return
+        }
+        records.append(SnapshotHashRecord(path: path, hash: HashUtilities.sha256(of: data)))
+    }
+
+    private func findDirectories(withExtension targetExtension: String, under rootURL: URL) throws -> [URL] {
+        var directories: [URL] = []
+
+        guard let enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return directories
+        }
+
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else {
+                continue
+            }
+            if url.pathExtension.lowercased() == targetExtension.lowercased() {
+                directories.append(url)
+            }
+        }
+
+        return directories
     }
 
     private func computeSnapshotHash(records: [SnapshotHashRecord], identityKey: String) -> String {
