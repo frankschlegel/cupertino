@@ -26,9 +26,6 @@ struct SaveCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Directory containing Swift.org documentation")
     var swiftOrgDir: String?
 
-    @Option(name: .long, help: "Directory containing package READMEs")
-    var packagesDir: String?
-
     @Option(name: .long, help: "Directory containing Apple Archive documentation")
     var archiveDir: String?
 

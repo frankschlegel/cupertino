@@ -19,7 +19,6 @@ The `save` command builds a Full-Text Search (FTS5) SQLite database from previou
 - [--docs-dir](option%20%28--%29/docs-dir.md) - Directory containing crawled documentation
 - [--evolution-dir](option%20%28--%29/evolution-dir.md) - Directory containing Swift Evolution proposals
 - [--swift-org-dir](option%20%28--%29/swift-org-dir.md) - Directory containing Swift.org documentation
-- [--packages-dir](option%20%28--%29/packages-dir.md) - Directory containing package READMEs
 - [--metadata-file](option%20%28--%29/metadata-file.md) - Path to metadata.json file
 - [--search-db](option%20%28--%29/search-db.md) - Output path for search database
 - [--clear](option%20%28--%29/clear.md) - Clear existing index before building
@@ -76,6 +75,7 @@ The FTS5 index supports:
 
 - **Remote mode** (`--remote`): No prerequisites - streams from GitHub
 - **Local mode**: Requires crawled documentation (run `cupertino fetch` first)
+- Third-party package docs are managed via `cupertino add|update|remove` in `~/.cupertino/third-party/`
 - Uses SQLite FTS5 for optimal search performance
 - Index size is typically ~10-20% of total documentation size
 - Remote mode is resumable if interrupted
