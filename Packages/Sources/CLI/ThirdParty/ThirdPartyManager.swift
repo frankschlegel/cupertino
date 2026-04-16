@@ -4,6 +4,12 @@ import SampleIndex
 import Search
 import Shared
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 // MARK: - Third-Party Manager
 
 /// Manages third-party documentation lifecycle in a dedicated overlay store.
@@ -24,11 +30,25 @@ struct ThirdPartyManager {
     // MARK: - Public API
 
     func add(sourceInput: String) async throws -> ThirdPartyOperationResult {
-        try await upsert(sourceInput: sourceInput, mode: .add)
+        try await add(sourceInput: sourceInput, buildOptions: .disabled)
+    }
+
+    func add(
+        sourceInput: String,
+        buildOptions: ThirdPartyBuildOptions
+    ) async throws -> ThirdPartyOperationResult {
+        try await upsert(sourceInput: sourceInput, mode: .add, buildOptions: buildOptions)
     }
 
     func update(sourceInput: String) async throws -> ThirdPartyOperationResult {
-        try await upsert(sourceInput: sourceInput, mode: .update)
+        try await update(sourceInput: sourceInput, buildOptions: .disabled)
+    }
+
+    func update(
+        sourceInput: String,
+        buildOptions: ThirdPartyBuildOptions
+    ) async throws -> ThirdPartyOperationResult {
+        try await upsert(sourceInput: sourceInput, mode: .update, buildOptions: buildOptions)
     }
 
     func remove(sourceInput: String) async throws -> ThirdPartyRemovalResult {
@@ -68,9 +88,25 @@ struct ThirdPartyManager {
         case update
     }
 
+    private struct DocCIndexedDocument {
+        let uriSuffix: String
+        let title: String
+        let content: String
+        let filePath: String
+    }
+
+    private struct DocCBuildEvaluation {
+        let status: ThirdPartyDocCStatus
+        let attempted: Bool
+        let libraryProducts: [String]
+        let diagnostics: [String]
+        let documents: [DocCIndexedDocument]
+    }
+
     private func upsert(
         sourceInput: String,
-        mode: UpsertMode
+        mode: UpsertMode,
+        buildOptions: ThirdPartyBuildOptions
     ) async throws -> ThirdPartyOperationResult {
         try prepareStore()
 
@@ -94,6 +130,11 @@ struct ThirdPartyManager {
         let uriPrefix = "packages://third-party/\(sourceID)/"
         let projectPrefix = "tp-\(sourceID)-"
         let framework = parsed.framework
+        let doccBuild = try evaluateDocCBuild(
+            source: parsed,
+            rootURL: materialized.rootURL,
+            buildOptions: buildOptions
+        )
 
         let searchIndex = try await Search.Index(dbPath: searchDBURL)
         let sampleDatabase = try await SampleIndex.Database(dbPath: samplesDBURL)
@@ -107,13 +148,20 @@ struct ThirdPartyManager {
         _ = try await searchIndex.deleteDocuments(withURIPrefix: uriPrefix)
         _ = try await sampleDatabase.deleteProjects(withIdPrefix: projectPrefix)
 
-        let docsIndexed = try await indexFallbackDocs(
+        let fallbackDocsIndexed = try await indexFallbackDocs(
             files: markdownFiles,
             rootURL: materialized.rootURL,
             uriPrefix: uriPrefix,
             framework: framework,
             searchIndex: searchIndex
         )
+        let doccDocsIndexed = try await indexDocCDocs(
+            documents: doccBuild.documents,
+            uriPrefix: uriPrefix,
+            framework: framework,
+            searchIndex: searchIndex
+        )
+        let docsIndexed = fallbackDocsIndexed + doccDocsIndexed
 
         let sampleCounts = try await indexFallbackSamples(
             roots: sampleRoots,
@@ -152,6 +200,14 @@ struct ThirdPartyManager {
             docsIndexed: docsIndexed,
             sampleProjectsIndexed: sampleCounts.projects,
             sampleFilesIndexed: sampleCounts.files,
+            build: ThirdPartyBuildRecord(
+                status: doccBuild.status,
+                attempted: doccBuild.attempted,
+                libraryProducts: doccBuild.libraryProducts,
+                diagnostics: doccBuild.diagnostics,
+                doccDocsIndexed: doccDocsIndexed,
+                updatedAt: now
+            ),
             installedAt: existingIndex.map { manifest.installs[$0].installedAt } ?? now,
             updatedAt: now
         )
@@ -169,6 +225,9 @@ struct ThirdPartyManager {
             source: parsed.displaySource,
             provenance: provenance,
             docsIndexed: docsIndexed,
+            doccStatus: doccBuild.status,
+            doccDocsIndexed: doccDocsIndexed,
+            doccDiagnostics: doccBuild.diagnostics,
             sampleProjectsIndexed: sampleCounts.projects,
             sampleFilesIndexed: sampleCounts.files,
             manifestPath: manifestURL
@@ -282,8 +341,42 @@ struct ThirdPartyManager {
     }
 
     private func runGit(_ arguments: [String], cwd: URL) throws {
+        do {
+            _ = try runCommand(executable: "/usr/bin/git", arguments: arguments, cwd: cwd)
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case let .commandFailed(_, output):
+                throw ThirdPartyManagerError.gitFailed(arguments.joined(separator: " "), output)
+            default:
+                throw error
+            }
+        }
+    }
+
+    private func runSwiftPackage(_ arguments: [String], cwd: URL) throws -> String {
+        do {
+            return try runCommand(
+                executable: "/usr/bin/swift",
+                arguments: ["package"] + arguments,
+                cwd: cwd
+            )
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case let .commandFailed(command, output):
+                throw ThirdPartyManagerError.swiftPackageFailed(command, output)
+            default:
+                throw error
+            }
+        }
+    }
+
+    private func runCommand(
+        executable: String,
+        arguments: [String],
+        cwd: URL
+    ) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.currentDirectoryURL = cwd
 
@@ -294,10 +387,339 @@ struct ThirdPartyManager {
         try process.run()
         process.waitUntilExit()
 
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         guard process.terminationStatus == 0 else {
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw ThirdPartyManagerError.gitFailed(arguments.joined(separator: " "), output)
+            throw ThirdPartyManagerError.commandFailed(
+                ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                output
+            )
         }
+        return output
+    }
+
+    // MARK: - DocC Build
+
+    private func evaluateDocCBuild(
+        source: ThirdPartySource,
+        rootURL: URL,
+        buildOptions: ThirdPartyBuildOptions
+    ) throws -> DocCBuildEvaluation {
+        guard buildOptions.mode == .automatic else {
+            return DocCBuildEvaluation(
+                status: .skipped,
+                attempted: false,
+                libraryProducts: [],
+                diagnostics: ["DocC build disabled for this invocation."],
+                documents: []
+            )
+        }
+
+        if !buildOptions.allowBuild {
+            guard isInteractiveSession(nonInteractiveFlag: buildOptions.nonInteractive) else {
+                throw ThirdPartyManagerError.nonInteractiveBuildRequiresAllowBuild
+            }
+            guard requestBuildConsent(for: source.displaySource) else {
+                return DocCBuildEvaluation(
+                    status: .skipped,
+                    attempted: false,
+                    libraryProducts: [],
+                    diagnostics: ["DocC build skipped: user declined interactive prompt."],
+                    documents: []
+                )
+            }
+        }
+
+        let libraryProducts: [String]
+        do {
+            libraryProducts = try discoverLibraryProducts(in: rootURL)
+        } catch {
+            return DocCBuildEvaluation(
+                status: .degraded,
+                attempted: true,
+                libraryProducts: [],
+                diagnostics: [compactDiagnostic("DocC prep failed: \(error.localizedDescription)")],
+                documents: []
+            )
+        }
+
+        guard !libraryProducts.isEmpty else {
+            return DocCBuildEvaluation(
+                status: .skipped,
+                attempted: true,
+                libraryProducts: [],
+                diagnostics: ["DocC build skipped: no library products found in Package.swift."],
+                documents: []
+            )
+        }
+
+        guard supportsGenerateDocumentationPlugin(in: rootURL) else {
+            return DocCBuildEvaluation(
+                status: .degraded,
+                attempted: true,
+                libraryProducts: libraryProducts,
+                diagnostics: ["DocC plugin command 'generate-documentation' is unavailable for this package."],
+                documents: []
+            )
+        }
+
+        let outputRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("cupertino-third-party-docc-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: outputRoot) }
+
+        var archives: [URL] = []
+        var diagnostics: [String] = []
+
+        for product in libraryProducts {
+            let targetOutput = outputRoot.appendingPathComponent(product)
+            do {
+                try fileManager.createDirectory(at: targetOutput, withIntermediateDirectories: true)
+                _ = try runSwiftPackage(
+                    [
+                        "plugin",
+                        "--allow-writing-to-directory",
+                        targetOutput.path,
+                        "generate-documentation",
+                        "--target",
+                        product,
+                        "--output-path",
+                        targetOutput.path,
+                        "--disable-indexing",
+                    ],
+                    cwd: rootURL
+                )
+                archives.append(contentsOf: try findDocCArchives(in: targetOutput))
+            } catch {
+                diagnostics.append(compactDiagnostic("DocC build failed for '\(product)': \(error.localizedDescription)"))
+            }
+        }
+
+        let documents = try collectDocCDocuments(from: archives)
+        let hasFailures = !diagnostics.isEmpty
+
+        if archives.isEmpty || documents.isEmpty {
+            let extra = archives.isEmpty
+                ? "No DocC archive was produced."
+                : "DocC archive generation succeeded, but no indexable DocC JSON documents were found."
+            diagnostics.append(extra)
+            return DocCBuildEvaluation(
+                status: .degraded,
+                attempted: true,
+                libraryProducts: libraryProducts,
+                diagnostics: diagnostics.map(compactDiagnostic),
+                documents: []
+            )
+        }
+
+        return DocCBuildEvaluation(
+            status: hasFailures ? .degraded : .succeeded,
+            attempted: true,
+            libraryProducts: libraryProducts,
+            diagnostics: diagnostics.map(compactDiagnostic),
+            documents: documents
+        )
+    }
+
+    private func isInteractiveSession(nonInteractiveFlag: Bool) -> Bool {
+        guard !nonInteractiveFlag else {
+            return false
+        }
+        return isatty(fileno(stdin)) != 0 && isatty(fileno(stdout)) != 0
+    }
+
+    private func requestBuildConsent(for source: String) -> Bool {
+        print("DocC generation can run build/plugin commands for '\(source)'. Continue? [y/N]: ", terminator: "")
+        fflush(stdout)
+
+        guard let response = readLine(strippingNewline: true)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() else {
+            return false
+        }
+        return response == "y" || response == "yes"
+    }
+
+    private func discoverLibraryProducts(in rootURL: URL) throws -> [String] {
+        let output = try runSwiftPackage(["dump-package"], cwd: rootURL)
+        guard let data = output.data(using: .utf8) else {
+            return []
+        }
+
+        let raw = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = raw as? [String: Any],
+              let products = dictionary["products"] as? [[String: Any]] else {
+            return []
+        }
+
+        var names: [String] = []
+        for product in products {
+            guard let name = product["name"] as? String,
+                  let type = product["type"] as? [String: Any],
+                  type["library"] != nil else {
+                continue
+            }
+            names.append(name)
+        }
+
+        return names.sorted()
+    }
+
+    private func supportsGenerateDocumentationPlugin(in rootURL: URL) -> Bool {
+        guard let output = try? runSwiftPackage(["plugin", "--list"], cwd: rootURL) else {
+            return false
+        }
+        return output.contains("generate-documentation")
+    }
+
+    private func findDocCArchives(in rootURL: URL) throws -> [URL] {
+        var archives: [URL] = []
+
+        guard let enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return archives
+        }
+
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                continue
+            }
+
+            if url.pathExtension.lowercased() == "doccarchive" {
+                archives.append(url)
+            }
+        }
+
+        return archives.sorted { $0.path < $1.path }
+    }
+
+    private func collectDocCDocuments(from archives: [URL]) throws -> [DocCIndexedDocument] {
+        var documents: [DocCIndexedDocument] = []
+        var seen = Set<String>()
+
+        for archive in archives {
+            guard let enumerator = fileManager.enumerator(
+                at: archive,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
+            }
+
+            for case let fileURL as URL in enumerator {
+                guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                    continue
+                }
+                guard fileURL.pathExtension.lowercased() == "json" else {
+                    continue
+                }
+
+                let relative = relativePath(from: fileURL, to: archive)
+                guard relative.contains("data/documentation/") || relative.contains("data/tutorials/") else {
+                    continue
+                }
+
+                let fileSize = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                guard fileSize < Shared.Constants.Limit.maxIndexableFileSize else {
+                    continue
+                }
+
+                guard let data = try? Data(contentsOf: fileURL),
+                      let rawJSON = String(data: data, encoding: .utf8),
+                      !rawJSON.isEmpty else {
+                    continue
+                }
+
+                let jsonObject = try? JSONSerialization.jsonObject(with: data)
+                var fragments: [String] = []
+                if let jsonObject {
+                    collectJSONStrings(from: jsonObject, into: &fragments)
+                }
+
+                let content = fragments
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                let searchableContent = content.isEmpty ? rawJSON : content
+
+                let title = (jsonObject.flatMap { firstString(forKey: "title", in: $0) })
+                    ?? humanizedTitle(from: fileURL.deletingPathExtension().lastPathComponent)
+
+                let archiveName = archive.deletingPathExtension().lastPathComponent
+                let docPath = "\(archiveName)/\(relative)"
+                let uriSuffix = "docc/\(uriPathComponent(fromRelativePath: docPath))"
+                guard seen.insert(uriSuffix).inserted else {
+                    continue
+                }
+
+                documents.append(
+                    DocCIndexedDocument(
+                        uriSuffix: uriSuffix,
+                        title: title,
+                        content: searchableContent,
+                        filePath: fileURL.path
+                    )
+                )
+            }
+        }
+
+        return documents
+    }
+
+    private func collectJSONStrings(from value: Any, into strings: inout [String]) {
+        switch value {
+        case let string as String:
+            strings.append(string)
+        case let dictionary as [String: Any]:
+            for element in dictionary.values {
+                collectJSONStrings(from: element, into: &strings)
+            }
+        case let array as [Any]:
+            for element in array {
+                collectJSONStrings(from: element, into: &strings)
+            }
+        default:
+            return
+        }
+    }
+
+    private func firstString(forKey key: String, in value: Any) -> String? {
+        switch value {
+        case let dictionary as [String: Any]:
+            if let direct = dictionary[key] as? String, !direct.isEmpty {
+                return direct
+            }
+            for nested in dictionary.values {
+                if let found = firstString(forKey: key, in: nested) {
+                    return found
+                }
+            }
+        case let array as [Any]:
+            for nested in array {
+                if let found = firstString(forKey: key, in: nested) {
+                    return found
+                }
+            }
+        default:
+            break
+        }
+        return nil
+    }
+
+    private func compactDiagnostic(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "Unknown DocC build issue"
+        }
+
+        let collapsed = trimmed
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n")
+            .map(String.init)
+            .joined(separator: " | ")
+        return String(collapsed.prefix(500))
     }
 
     // MARK: - Discovery
@@ -424,6 +846,36 @@ struct ThirdPartyManager {
                 sourceType: Shared.Constants.SourcePrefix.packages
             )
 
+            indexed += 1
+        }
+
+        return indexed
+    }
+
+    private func indexDocCDocs(
+        documents: [DocCIndexedDocument],
+        uriPrefix: String,
+        framework: String,
+        searchIndex: Search.Index
+    ) async throws -> Int {
+        var indexed = 0
+
+        for document in documents {
+            guard !document.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+
+            try await searchIndex.indexDocument(
+                uri: "\(uriPrefix)\(document.uriSuffix)",
+                source: Shared.Constants.SourcePrefix.packages,
+                framework: framework,
+                title: document.title,
+                content: document.content,
+                filePath: document.filePath,
+                contentHash: HashUtilities.sha256(of: document.content),
+                lastCrawled: Date(),
+                sourceType: Shared.Constants.SourcePrefix.packages
+            )
             indexed += 1
         }
 
@@ -764,11 +1216,48 @@ enum ThirdPartyOperationMode: String, Sendable {
     case updated
 }
 
+enum ThirdPartyDocCStatus: String, Codable, Sendable {
+    case skipped
+    case succeeded
+    case degraded
+}
+
+struct ThirdPartyBuildOptions: Sendable {
+    enum Mode: Sendable {
+        case disabled
+        case automatic
+    }
+
+    let mode: Mode
+    let allowBuild: Bool
+    let nonInteractive: Bool
+
+    static let disabled = ThirdPartyBuildOptions(
+        mode: .disabled,
+        allowBuild: false,
+        nonInteractive: true
+    )
+
+    static func automatic(
+        allowBuild: Bool,
+        nonInteractive: Bool
+    ) -> ThirdPartyBuildOptions {
+        ThirdPartyBuildOptions(
+            mode: .automatic,
+            allowBuild: allowBuild,
+            nonInteractive: nonInteractive
+        )
+    }
+}
+
 struct ThirdPartyOperationResult: Sendable {
     let mode: ThirdPartyOperationMode
     let source: String
     let provenance: String
     let docsIndexed: Int
+    let doccStatus: ThirdPartyDocCStatus
+    let doccDocsIndexed: Int
+    let doccDiagnostics: [String]
     let sampleProjectsIndexed: Int
     let sampleFilesIndexed: Int
     let manifestPath: URL
@@ -784,6 +1273,15 @@ struct ThirdPartyRemovalResult: Sendable {
 private struct ThirdPartyManifest: Codable {
     var version: Int = 1
     var installs: [ThirdPartyInstallation] = []
+}
+
+private struct ThirdPartyBuildRecord: Codable {
+    let status: ThirdPartyDocCStatus
+    let attempted: Bool
+    let libraryProducts: [String]
+    let diagnostics: [String]
+    let doccDocsIndexed: Int
+    let updatedAt: Date
 }
 
 private struct ThirdPartyInstallation: Codable {
@@ -804,6 +1302,7 @@ private struct ThirdPartyInstallation: Codable {
     let docsIndexed: Int
     let sampleProjectsIndexed: Int
     let sampleFilesIndexed: Int
+    let build: ThirdPartyBuildRecord?
     let installedAt: Date
     let updatedAt: Date
 }
@@ -961,6 +1460,9 @@ enum ThirdPartyManagerError: Error, LocalizedError {
     case noMatchingInstall(String, [String])
     case ambiguousRemoveSelector(String, [String])
     case gitFailed(String, String)
+    case swiftPackageFailed(String, String)
+    case commandFailed(String, String)
+    case nonInteractiveBuildRequiresAllowBuild
 
     var errorDescription: String? {
         switch self {
@@ -984,6 +1486,20 @@ enum ThirdPartyManagerError: Error, LocalizedError {
                 return "Git command failed: git \(command)"
             }
             return "Git command failed: git \(command)\n\(trimmed)"
+        case let .swiftPackageFailed(command, output):
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Swift package command failed: \(command)"
+            }
+            return "Swift package command failed: \(command)\n\(trimmed)"
+        case let .commandFailed(command, output):
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Command failed: \(command)"
+            }
+            return "Command failed: \(command)\n\(trimmed)"
+        case .nonInteractiveBuildRequiresAllowBuild:
+            return "DocC generation requires build execution. Re-run with --allow-build for non-interactive use."
         }
     }
 }
