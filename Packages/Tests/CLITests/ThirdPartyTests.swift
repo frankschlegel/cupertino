@@ -73,6 +73,59 @@ struct ThirdPartyTests {
         #expect(installsAfterRemove.isEmpty)
     }
 
+    @Test("Automatic DocC build requires --allow-build when non-interactive")
+    func nonInteractiveBuildGate() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("source")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeLocalFixture(at: sourceDir, marker: "gate")
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+
+        do {
+            _ = try await manager.add(
+                sourceInput: sourceDir.path,
+                buildOptions: .automatic(allowBuild: false, nonInteractive: true)
+            )
+            Issue.record("Expected non-interactive build gate error")
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case .nonInteractiveBuildRequiresAllowBuild:
+                return
+            default:
+                Issue.record("Unexpected error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @Test("DocC failures degrade gracefully and fallback ingestion still succeeds")
+    func degradedDocCFallback() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("broken-library")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeBrokenLibraryFixture(at: sourceDir, marker: "broken")
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let result = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+
+        #expect(result.doccStatus == .degraded)
+        #expect(result.docsIndexed >= 2)
+        #expect(!result.doccDiagnostics.isEmpty)
+
+        let installs = try Self.readManifestFullInstalls(from: storeDir)
+        #expect(installs.count == 1)
+        #expect(installs[0].build?.status == .degraded)
+        #expect(installs[0].build?.attempted == true)
+        #expect(installs[0].build?.doccDocsIndexed == result.doccDocsIndexed)
+    }
+
     @Test("Remove works for local source even if source directory no longer exists")
     func removeWithoutExistingLocalPath() async throws {
         let testDir = Self.testDirectory()
@@ -183,6 +236,15 @@ struct ThirdPartyTests {
 
 private extension ThirdPartyTests {
     struct ManifestFile: Codable {
+        struct BuildRecord: Codable {
+            let status: ThirdPartyDocCStatus
+            let attempted: Bool
+            let libraryProducts: [String]
+            let diagnostics: [String]
+            let doccDocsIndexed: Int
+            let updatedAt: Date
+        }
+
         struct FullInstall: Codable {
             let id: String
             let identityKey: String
@@ -201,6 +263,7 @@ private extension ThirdPartyTests {
             let docsIndexed: Int
             let sampleProjectsIndexed: Int
             let sampleFilesIndexed: Int
+            var build: BuildRecord? = nil
             let installedAt: Date
             let updatedAt: Date
         }
@@ -245,6 +308,50 @@ private extension ThirdPartyTests {
             )
     }
 
+    static func makeBrokenLibraryFixture(at sourceDir: URL, marker: String) throws {
+        let fileManager = FileManager.default
+
+        try fileManager.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: sourceDir.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: sourceDir.appendingPathComponent("Sources/FixtureLib"),
+            withIntermediateDirectories: true
+        )
+
+        let packageSwift = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "FixtureLib",
+            products: [
+                .library(name: "FixtureLib", targets: ["FixtureLib"])
+            ],
+            targets: [
+                .target(name: "FixtureLib")
+            ]
+        )
+        """
+
+        let brokenSource = """
+        public struct Fixture\(marker.capitalized) {
+            public init() {}
+            public let broken: = 42
+        }
+        """
+
+        try packageSwift.write(to: sourceDir.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        try brokenSource.write(
+            to: sourceDir.appendingPathComponent("Sources/FixtureLib/Fixture.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "# Fixture \(marker)\n\nfallback-readme\n"
+            .write(to: sourceDir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try "# Guide \(marker)\n\nfallback-guide\n"
+            .write(to: sourceDir.appendingPathComponent("docs/guide.md"), atomically: true, encoding: .utf8)
+    }
+
     static func readManifestInstalls(from storeDir: URL) throws -> [ManifestFile.Install] {
         let manifestURL = storeDir.appendingPathComponent("manifest.json")
         let data = try Data(contentsOf: manifestURL)
@@ -252,6 +359,16 @@ private extension ThirdPartyTests {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let manifest = try decoder.decode(ManifestFile.self, from: data)
+        return manifest.installs
+    }
+
+    static func readManifestFullInstalls(from storeDir: URL) throws -> [ManifestFile.FullInstall] {
+        let manifestURL = storeDir.appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let manifest = try decoder.decode(ManifestWriteFile.self, from: data)
         return manifest.installs
     }
 
