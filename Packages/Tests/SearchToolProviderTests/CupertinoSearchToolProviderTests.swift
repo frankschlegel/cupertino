@@ -908,6 +908,142 @@ struct SearchErrorHandlingTests {
     }
 }
 
+// MARK: - Third-Party Overlay Integration Tests
+
+@Suite("Third-Party Overlay Integration", .serialized)
+struct ThirdPartyOverlayIntegrationTests {
+    @Test("Packages search merges core and overlay DBs and dedupes by URI")
+    func packagesSearchMergesAndDedupesByURI() async throws {
+        let (coreIndex, coreCleanup) = try await createTestSearchIndex()
+        defer { try? coreCleanup() }
+        let (overlayIndex, overlayCleanup) = try await createTestSearchIndex()
+        defer { try? overlayCleanup() }
+
+        try await coreIndex.indexDocument(
+            uri: "packages://core/acme-routing/introduction",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Core Acme Routing Introduction",
+            content: "Acme routing package reducers and effects overview.",
+            filePath: "/test/core-introduction.md",
+            contentHash: "core-hash-1",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+        try await coreIndex.indexDocument(
+            uri: "packages://shared/acme-routing/overview",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Shared Acme Routing Overview (Core)",
+            content: "Shared acme routing overview.",
+            filePath: "/test/core-shared.md",
+            contentHash: "core-hash-2",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+
+        try await overlayIndex.indexDocument(
+            uri: "packages://third-party/src-1/docs/acme-guide",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Overlay Acme Routing Guide",
+            content: "Acme routing navigation and bindings guide.",
+            filePath: "/test/overlay-guide.md",
+            contentHash: "overlay-hash-1",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+        try await overlayIndex.indexDocument(
+            uri: "packages://shared/acme-routing/overview",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Shared Acme Routing Overview (Overlay)",
+            content: "Duplicate URI in overlay index.",
+            filePath: "/test/overlay-shared.md",
+            contentHash: "overlay-hash-2",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+
+        let provider = CompositeToolProvider(
+            searchIndex: coreIndex,
+            overlaySearchIndex: overlayIndex,
+            sampleDatabase: nil
+        )
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("acme routing"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.packages),
+            "limit": AnyCodable(20),
+        ]
+
+        let result = try await provider.callTool(name: "search", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            let markdown = textContent.text
+            #expect(markdown.contains("packages://core/acme-routing/introduction"))
+            #expect(markdown.contains("packages://third-party/src-1/docs/acme-guide"))
+            #expect(markdown.contains("packages://shared/acme-routing/overview"))
+            #expect(markdown.occurrences(of: "packages://shared/acme-routing/overview") == 1)
+        }
+
+        await coreIndex.disconnect()
+        await overlayIndex.disconnect()
+    }
+
+    @Test("read_document resolves overlay URIs transparently")
+    func readDocumentResolvesOverlayURI() async throws {
+        let (coreIndex, coreCleanup) = try await createTestSearchIndex()
+        defer { try? coreCleanup() }
+        let (overlayIndex, overlayCleanup) = try await createTestSearchIndex()
+        defer { try? overlayCleanup() }
+
+        try await overlayIndex.indexDocument(
+            uri: "packages://third-party/src-2/docs/readme",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Overlay README",
+            content: "# Overlay README\n\nThis content exists only in the overlay index.",
+            filePath: "/test/overlay-readme.md",
+            contentHash: "overlay-read-hash",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+
+        let provider = CompositeToolProvider(
+            searchIndex: coreIndex,
+            overlaySearchIndex: overlayIndex,
+            sampleDatabase: nil
+        )
+        let args: [String: AnyCodable] = [
+            "uri": AnyCodable("packages://third-party/src-2/docs/readme"),
+            "format": AnyCodable("markdown"),
+        ]
+
+        let result = try await provider.callTool(name: "read_document", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            #expect(textContent.text.contains("exists only in the overlay index"))
+        }
+
+        await coreIndex.disconnect()
+        await overlayIndex.disconnect()
+    }
+}
+
+private extension String {
+    func occurrences(of substring: String) -> Int {
+        guard !substring.isEmpty else { return 0 }
+
+        var count = 0
+        var searchRange = startIndex..<endIndex
+        while let range = range(of: substring, options: [], range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<endIndex
+        }
+        return count
+    }
+}
+
 // MARK: - Formatter Tests
 
 @Suite("Unified Search Formatter", .serialized)
