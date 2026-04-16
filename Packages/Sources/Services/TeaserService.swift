@@ -8,21 +8,47 @@ import Shared
 /// Service for fetching teaser results from sources the user didn't search.
 /// Consolidates teaser logic previously duplicated between CLI and MCP.
 public actor TeaserService {
-    private let searchIndex: Search.Index?
+    private let docsService: DocsSearchService?
     private let sampleDatabase: SampleIndex.Database?
 
     /// Initialize with existing database connections
-    public init(searchIndex: Search.Index?, sampleDatabase: SampleIndex.Database?) {
-        self.searchIndex = searchIndex
+    public init(
+        searchIndex: Search.Index?,
+        overlaySearchIndex: Search.Index? = nil,
+        sampleDatabase: SampleIndex.Database?
+    ) {
+        if let searchIndex {
+            docsService = DocsSearchService(index: searchIndex, overlayIndex: overlaySearchIndex)
+        } else {
+            docsService = nil
+        }
         self.sampleDatabase = sampleDatabase
     }
 
     /// Initialize with database paths (creates connections)
-    public init(searchDbPath: URL?, sampleDbPath: URL?) async throws {
+    public init(
+        searchDbPath: URL?,
+        overlaySearchDbPath: URL?,
+        sampleDbPath: URL?
+    ) async throws {
+        let primarySearchIndex: Search.Index?
         if let searchDbPath, PathResolver.exists(searchDbPath) {
-            searchIndex = try await Search.Index(dbPath: searchDbPath)
+            primarySearchIndex = try await Search.Index(dbPath: searchDbPath)
         } else {
-            searchIndex = nil
+            primarySearchIndex = nil
+        }
+
+        let overlaySearchIndex: Search.Index?
+        if let overlaySearchDbPath, PathResolver.exists(overlaySearchDbPath) {
+            overlaySearchIndex = try await Search.Index(dbPath: overlaySearchDbPath)
+        } else {
+            overlaySearchIndex = nil
+        }
+
+        if let primarySearchIndex {
+            docsService = DocsSearchService(index: primarySearchIndex, overlayIndex: overlaySearchIndex)
+        } else {
+            docsService = nil
         }
 
         if let sampleDbPath, PathResolver.exists(sampleDbPath) {
@@ -128,17 +154,17 @@ public actor TeaserService {
 
     /// Fetch teaser results from a specific source
     public func fetchTeaserFromSource(query: String, sourceType: String) async -> [Search.Result] {
-        guard let searchIndex else { return [] }
+        guard let docsService else { return [] }
 
         do {
-            return try await searchIndex.search(
-                query: query,
+            return try await docsService.search(SearchQuery(
+                text: query,
                 source: sourceType,
                 framework: nil,
                 language: nil,
                 limit: Shared.Constants.Limit.teaserLimit,
                 includeArchive: sourceType == Shared.Constants.SourcePrefix.appleArchive
-            )
+            ))
         } catch {
             return []
         }
@@ -163,9 +189,26 @@ extension ServiceContainer {
     ) async throws -> T {
         let resolvedSearchPath = PathResolver.searchDatabase(searchDbPath)
         let resolvedSamplePath = sampleDbPath ?? SampleIndex.defaultDatabasePath
+        let resolvedOverlayPath = ServiceContainer.resolveOverlaySearchPath(
+            primarySearchPath: resolvedSearchPath,
+            customSearchPathArgument: searchDbPath
+        )
+        let primarySearchPath: URL?
+        let overlaySearchPath: URL?
+        if PathResolver.exists(resolvedSearchPath) {
+            primarySearchPath = resolvedSearchPath
+            overlaySearchPath = resolvedOverlayPath
+        } else if let resolvedOverlayPath {
+            primarySearchPath = resolvedOverlayPath
+            overlaySearchPath = nil
+        } else {
+            primarySearchPath = nil
+            overlaySearchPath = nil
+        }
 
         let service = try await TeaserService(
-            searchDbPath: PathResolver.exists(resolvedSearchPath) ? resolvedSearchPath : nil,
+            searchDbPath: primarySearchPath,
+            overlaySearchDbPath: overlaySearchPath,
             sampleDbPath: PathResolver.exists(resolvedSamplePath) ? resolvedSamplePath : nil
         )
 

@@ -14,17 +14,23 @@ public actor CompositeToolProvider: ToolProvider {
     private let docsService: DocsSearchService?
     private let sampleService: SampleSearchService?
 
-    // Keep direct access for low-level operations (list frameworks, read document)
+    // Keep direct index access for operations not routed through services.
     private let searchIndex: Search.Index?
+    private let overlaySearchIndex: Search.Index?
     private let sampleDatabase: SampleIndex.Database?
 
-    public init(searchIndex: Search.Index?, sampleDatabase: SampleIndex.Database?) {
+    public init(
+        searchIndex: Search.Index?,
+        overlaySearchIndex: Search.Index? = nil,
+        sampleDatabase: SampleIndex.Database?
+    ) {
         self.searchIndex = searchIndex
+        self.overlaySearchIndex = overlaySearchIndex
         self.sampleDatabase = sampleDatabase
 
         // Wrap databases with services for search operations
         if let searchIndex {
-            docsService = DocsSearchService(index: searchIndex)
+            docsService = DocsSearchService(index: searchIndex, overlayIndex: overlaySearchIndex)
         } else {
             docsService = nil
         }
@@ -487,7 +493,11 @@ public actor CompositeToolProvider: ToolProvider {
         currentSource: String?,
         includeArchive: Bool
     ) async -> Services.TeaserResults {
-        let teaserService = TeaserService(searchIndex: searchIndex, sampleDatabase: sampleDatabase)
+        let teaserService = TeaserService(
+            searchIndex: searchIndex,
+            overlaySearchIndex: overlaySearchIndex,
+            sampleDatabase: sampleDatabase
+        )
         return await teaserService.fetchAllTeasers(
             query: query,
             framework: framework,
@@ -575,7 +585,11 @@ public actor CompositeToolProvider: ToolProvider {
         limit: Int
     ) async throws -> CallToolResult {
         // Use UnifiedSearchService to search all 8 sources
-        let unifiedService = UnifiedSearchService(searchIndex: searchIndex, sampleDatabase: sampleDatabase)
+        let unifiedService = UnifiedSearchService(
+            searchIndex: searchIndex,
+            overlaySearchIndex: overlaySearchIndex,
+            sampleDatabase: sampleDatabase
+        )
         let input = await unifiedService.searchAll(
             query: query,
             framework: framework,
@@ -596,12 +610,12 @@ public actor CompositeToolProvider: ToolProvider {
     // MARK: - List Frameworks
 
     private func handleListFrameworks() async throws -> CallToolResult {
-        guard let searchIndex else {
-            throw ToolError.invalidArgument("index", "Documentation index not available")
+        guard let docsService else {
+            throw ToolError.invalidArgument("service", "Documentation index not available")
         }
 
-        let frameworks = try await searchIndex.listFrameworks()
-        let totalDocs = try await searchIndex.documentCount()
+        let frameworks = try await docsService.listFrameworks()
+        let totalDocs = try await docsService.documentCount()
 
         let formatter = FrameworksMarkdownFormatter(totalDocs: totalDocs)
         let markdown = formatter.format(frameworks)
@@ -612,8 +626,8 @@ public actor CompositeToolProvider: ToolProvider {
     // MARK: - Read Document
 
     private func handleReadDocument(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let searchIndex else {
-            throw ToolError.invalidArgument("index", "Documentation index not available")
+        guard let docsService else {
+            throw ToolError.invalidArgument("service", "Documentation index not available")
         }
 
         let uri: String = try args.require(Shared.Constants.Search.schemaParamURI)
@@ -621,7 +635,7 @@ public actor CompositeToolProvider: ToolProvider {
         let format: Search.Index.DocumentFormat = formatString == Shared.Constants.Search.formatValueMarkdown
             ? .markdown : .json
 
-        guard let documentContent = try await searchIndex.getDocumentContent(uri: uri, format: format) else {
+        guard let documentContent = try await docsService.read(uri: uri, format: format) else {
             throw ToolError.invalidArgument(
                 Shared.Constants.Search.schemaParamURI,
                 "Document not found: \(uri)"

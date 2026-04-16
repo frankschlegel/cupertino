@@ -50,12 +50,14 @@ struct ServeCommand: AsyncParsableCommand {
 
         let evolutionURL = Shared.Constants.defaultSwiftEvolutionDirectory
         let searchDBURL = Shared.Constants.defaultSearchDatabase
+        let overlaySearchDBURL = Shared.Constants.defaultThirdPartySearchDatabase
 
         // Check if there's anything to serve
         let hasData = checkForData(
             docsDir: config.crawler.outputDirectory,
             evolutionDir: evolutionURL,
-            searchDB: searchDBURL
+            searchDB: searchDBURL,
+            overlaySearchDB: overlaySearchDBURL
         )
 
         if !hasData {
@@ -69,10 +71,16 @@ struct ServeCommand: AsyncParsableCommand {
             server: server,
             config: config,
             evolutionURL: evolutionURL,
-            searchDBURL: searchDBURL
+            searchDBURL: searchDBURL,
+            overlaySearchDBURL: overlaySearchDBURL
         )
 
-        printStartupMessages(config: config, evolutionURL: evolutionURL, searchDBURL: searchDBURL)
+        printStartupMessages(
+            config: config,
+            evolutionURL: evolutionURL,
+            searchDBURL: searchDBURL,
+            overlaySearchDBURL: overlaySearchDBURL
+        )
 
         let transport = StdioTransport()
         try await server.connect(transport)
@@ -87,16 +95,23 @@ struct ServeCommand: AsyncParsableCommand {
         server: MCPServer,
         config: Shared.Configuration,
         evolutionURL: URL,
-        searchDBURL: URL
+        searchDBURL: URL,
+        overlaySearchDBURL: URL
     ) async {
         // Initialize search index if available
         let searchIndex: Search.Index? = await loadSearchIndex(searchDBURL: searchDBURL)
+        let overlaySearchIndex: Search.Index? = await loadSearchIndex(
+            searchDBURL: overlaySearchDBURL,
+            description: "third-party overlay"
+        )
+        let primarySearchIndexForProviders = searchIndex ?? overlaySearchIndex
+        let overlaySearchIndexForProviders = searchIndex == nil ? nil : overlaySearchIndex
 
         // Register resource provider with optional search index
         let resourceProvider = DocsResourceProvider(
             configuration: config,
             evolutionDirectory: evolutionURL,
-            searchIndex: searchIndex
+            searchIndex: primarySearchIndexForProviders
         )
         await server.registerResourceProvider(resourceProvider)
 
@@ -104,12 +119,23 @@ struct ServeCommand: AsyncParsableCommand {
         let sampleIndex = await loadSampleIndex()
 
         // Register composite tool provider with both indexes
-        let toolProvider = CompositeToolProvider(searchIndex: searchIndex, sampleDatabase: sampleIndex)
+        let toolProvider = CompositeToolProvider(
+            searchIndex: primarySearchIndexForProviders,
+            overlaySearchIndex: overlaySearchIndexForProviders,
+            sampleDatabase: sampleIndex
+        )
         await server.registerToolProvider(toolProvider)
 
         // Log availability of each index
         if searchIndex != nil {
             let message = "✅ Documentation search enabled (index found)"
+            Log.info(message, category: .mcp)
+        } else if overlaySearchIndex != nil {
+            let message = "✅ Documentation search enabled from third-party overlay index"
+            Log.info(message, category: .mcp)
+        }
+        if overlaySearchIndex != nil {
+            let message = "✅ Third-party overlay search enabled (index found)"
             Log.info(message, category: .mcp)
         }
         if sampleIndex != nil {
@@ -140,11 +166,20 @@ struct ServeCommand: AsyncParsableCommand {
         }
     }
 
-    private func loadSearchIndex(searchDBURL: URL) async -> Search.Index? {
+    private func loadSearchIndex(
+        searchDBURL: URL,
+        description: String = "documentation"
+    ) async -> Search.Index? {
         guard FileManager.default.fileExists(atPath: searchDBURL.path) else {
-            let infoMsg = "ℹ️  Search index not found at: \(searchDBURL.path)"
-            let cmd = "\(Shared.Constants.App.commandName) save"
-            let hintMsg = "   Tools will not be available. Run '\(cmd)' to enable search."
+            let infoMsg = "ℹ️  \(description.capitalized) search index not found at: \(searchDBURL.path)"
+            let hintMsg: String
+            if description == "third-party overlay" {
+                let cmd = "\(Shared.Constants.App.commandName) add <source>"
+                hintMsg = "   Overlay results will be skipped. Run '\(cmd)' to add third-party docs."
+            } else {
+                let cmd = "\(Shared.Constants.App.commandName) save"
+                hintMsg = "   Tools will not be available. Run '\(cmd)' to enable search."
+            }
             Log.info("\(infoMsg) \(hintMsg)", category: .mcp)
             return nil
         }
@@ -153,20 +188,33 @@ struct ServeCommand: AsyncParsableCommand {
             let searchIndex = try await Search.Index(dbPath: searchDBURL)
             return searchIndex
         } catch {
-            let errorMsg = "⚠️  Failed to load search index: \(error)"
-            let cmd = "\(Shared.Constants.App.commandName) save"
-            let hintMsg = "   Tools will not be available. Run '\(cmd)' to create the index."
+            let errorMsg = "⚠️  Failed to load \(description) search index: \(error)"
+            let hintMsg: String
+            if description == "third-party overlay" {
+                hintMsg = "   Overlay results will be skipped until the index is fixed."
+            } else {
+                let cmd = "\(Shared.Constants.App.commandName) save"
+                hintMsg = "   Tools will not be available. Run '\(cmd)' to create the index."
+            }
             Log.warning("\(errorMsg) \(hintMsg)", category: .mcp)
             return nil
         }
     }
 
-    private func printStartupMessages(config _: Shared.Configuration, evolutionURL _: URL, searchDBURL: URL) {
+    private func printStartupMessages(
+        config _: Shared.Configuration,
+        evolutionURL _: URL,
+        searchDBURL: URL,
+        overlaySearchDBURL: URL
+    ) {
         var messages = ["🚀 Cupertino MCP Server starting..."]
 
         // Add search DB path if it exists
         if FileManager.default.fileExists(atPath: searchDBURL.path) {
             messages.append("   Search DB: \(searchDBURL.path)")
+        }
+        if FileManager.default.fileExists(atPath: overlaySearchDBURL.path) {
+            messages.append("   Overlay Search DB: \(overlaySearchDBURL.path)")
         }
 
         // Add samples DB path if it exists
@@ -182,14 +230,20 @@ struct ServeCommand: AsyncParsableCommand {
         }
     }
 
-    private func checkForData(docsDir _: URL, evolutionDir _: URL, searchDB: URL) -> Bool {
+    private func checkForData(
+        docsDir _: URL,
+        evolutionDir _: URL,
+        searchDB: URL,
+        overlaySearchDB: URL
+    ) -> Bool {
         let fileManager = FileManager.default
 
         // Check if either database exists
         let hasSearchDB = fileManager.fileExists(atPath: searchDB.path)
+        let hasOverlaySearchDB = fileManager.fileExists(atPath: overlaySearchDB.path)
         let hasSamplesDB = fileManager.fileExists(atPath: SampleIndex.defaultDatabasePath.path)
 
-        return hasSearchDB || hasSamplesDB
+        return hasSearchDB || hasOverlaySearchDB || hasSamplesDB
     }
 
     private func printGettingStartedGuide() {

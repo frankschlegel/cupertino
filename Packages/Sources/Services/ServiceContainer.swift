@@ -13,14 +13,18 @@ public actor ServiceContainer {
     private var sampleService: SampleSearchService?
 
     private let searchDbPath: URL
+    private let overlaySearchDbPath: URL?
     private let sampleDbPath: URL?
 
     /// Initialize with database paths
     public init(
         searchDbPath: URL = Shared.Constants.defaultSearchDatabase,
+        overlaySearchDbPath: URL? = nil,
         sampleDbPath: URL? = nil
     ) {
         self.searchDbPath = searchDbPath
+        self.overlaySearchDbPath = overlaySearchDbPath ??
+            Self.resolveOverlaySearchPath(primarySearchPath: searchDbPath, customSearchPathArgument: nil)
         self.sampleDbPath = sampleDbPath
     }
 
@@ -32,7 +36,10 @@ public actor ServiceContainer {
             return service
         }
 
-        let service = try await DocsSearchService(dbPath: searchDbPath)
+        let service = try await DocsSearchService(
+            dbPath: searchDbPath,
+            overlayDbPath: overlaySearchDbPath
+        )
         docsService = service
         return service
     }
@@ -92,12 +99,29 @@ public actor ServiceContainer {
         operation: (DocsSearchService) async throws -> T
     ) async throws -> T {
         let resolvedPath = PathResolver.searchDatabase(dbPath)
+        let defaultOverlayPath = resolveOverlaySearchPath(
+            primarySearchPath: resolvedPath,
+            customSearchPathArgument: dbPath
+        )
 
-        guard PathResolver.exists(resolvedPath) else {
-            throw ToolError.noData("Search database not found at \(resolvedPath.path). Run 'cupertino save' to build the index.")
+        let primaryPath: URL
+        let overlayPath: URL?
+        if PathResolver.exists(resolvedPath) {
+            primaryPath = resolvedPath
+            overlayPath = defaultOverlayPath
+        } else if let defaultOverlayPath {
+            primaryPath = defaultOverlayPath
+            overlayPath = nil
+        } else {
+            throw ToolError.noData(
+                "Search database not found at \(resolvedPath.path). Run 'cupertino save' to build the index."
+            )
         }
 
-        let service = try await DocsSearchService(dbPath: resolvedPath)
+        let service = try await DocsSearchService(
+            dbPath: primaryPath,
+            overlayDbPath: overlayPath
+        )
         defer {
             Task {
                 await service.disconnect()
@@ -142,5 +166,23 @@ public actor ServiceContainer {
         let result = try await operation(service)
         await service.disconnect()
         return result
+    }
+
+    // MARK: - Shared Path Resolution
+
+    static func resolveOverlaySearchPath(
+        primarySearchPath: URL,
+        customSearchPathArgument: String?
+    ) -> URL? {
+        let defaultPath = Shared.Constants.defaultSearchDatabase.standardizedFileURL.path
+        let isUsingDefaultPrimary = customSearchPathArgument == nil ||
+            primarySearchPath.standardizedFileURL.path == defaultPath
+
+        guard isUsingDefaultPrimary else {
+            return nil
+        }
+
+        let overlayPath = Shared.Constants.defaultThirdPartySearchDatabase
+        return PathResolver.exists(overlayPath) ? overlayPath : nil
     }
 }
