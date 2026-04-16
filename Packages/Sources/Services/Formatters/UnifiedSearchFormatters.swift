@@ -10,11 +10,17 @@ public struct UnifiedSearchTextFormatter: ResultFormatter {
     private let query: String
     private let framework: String?
     private let config: SearchResultFormatConfig
+    private let packageProvenanceResolver: PackageProvenanceResolver
 
-    public init(query: String, framework: String?, config: SearchResultFormatConfig = .cliDefault) {
+    public init(
+        query: String,
+        framework: String?,
+        config: SearchResultFormatConfig = .cliDefault
+    ) {
         self.query = query
         self.framework = framework
         self.config = config
+        packageProvenanceResolver = .shared
     }
 
     public func format(_ input: UnifiedSearchInput) -> String {
@@ -78,6 +84,12 @@ public struct UnifiedSearchTextFormatter: ResultFormatter {
                 output += "\(summary)\n"
             }
             output += "- **URI:** `\(result.uri)`\n"
+            if let provenance = PackageResultMetadata.packageProvenance(
+                for: result,
+                resolver: packageProvenanceResolver
+            ) {
+                output += "- **Provenance:** `\(provenance)`\n"
+            }
             if config.showAvailability,
                let availability = result.availabilityString, !availability.isEmpty {
                 output += "- **Availability:** \(availability)\n"
@@ -201,6 +213,7 @@ private struct ResultJSONOutput: Encodable {
     let title: String
     let framework: String
     let uri: String
+    let provenance: String?
     let availability: String?
     let summary: String
     let matchedSymbols: [SymbolJSONOutput]?
@@ -209,6 +222,7 @@ private struct ResultJSONOutput: Encodable {
         title = result.title.cleanedForDisplay
         framework = result.framework
         uri = result.uri
+        provenance = PackageResultMetadata.packageProvenance(for: result)
         availability = result.availabilityString
         summary = result.cleanedSummary.cleanedForDisplay
         matchedSymbols = result.matchedSymbols?.map(SymbolJSONOutput.init)

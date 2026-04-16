@@ -130,6 +130,15 @@ struct ThirdPartyManager {
         let uriPrefix = "packages://third-party/\(sourceID)/"
         let projectPrefix = "tp-\(sourceID)-"
         let framework = parsed.framework
+        let hashRecords = try collectSnapshotHashRecords(
+            markdownFiles: markdownFiles,
+            sampleRoots: sampleRoots,
+            sourceRoot: materialized.rootURL
+        )
+        let snapshotHash = computeSnapshotHash(records: hashRecords, identityKey: parsed.identityKey)
+        let effectiveRef = parsed.reference(derivedLocalSnapshotHash: snapshotHash)
+        let provenance = parsed.provenance(reference: effectiveRef)
+        let encodedProvenance = encodedURIPathComponent(provenance)
         let doccBuild = try evaluateDocCBuild(
             source: parsed,
             rootURL: materialized.rootURL,
@@ -152,12 +161,14 @@ struct ThirdPartyManager {
             files: markdownFiles,
             rootURL: materialized.rootURL,
             uriPrefix: uriPrefix,
+            encodedProvenance: encodedProvenance,
             framework: framework,
             searchIndex: searchIndex
         )
         let doccDocsIndexed = try await indexDocCDocs(
             documents: doccBuild.documents,
             uriPrefix: uriPrefix,
+            encodedProvenance: encodedProvenance,
             framework: framework,
             searchIndex: searchIndex
         )
@@ -171,15 +182,6 @@ struct ThirdPartyManager {
             sourceDisplay: parsed.displaySource,
             sampleDatabase: sampleDatabase
         )
-
-        let hashRecords = try collectSnapshotHashRecords(
-            markdownFiles: markdownFiles,
-            sampleRoots: sampleRoots,
-            sourceRoot: materialized.rootURL
-        )
-        let snapshotHash = computeSnapshotHash(records: hashRecords, identityKey: parsed.identityKey)
-        let effectiveRef = parsed.reference(derivedLocalSnapshotHash: snapshotHash)
-        let provenance = parsed.provenance(reference: effectiveRef)
 
         let now = Date()
         let newEntry = ThirdPartyInstallation(
@@ -818,6 +820,7 @@ struct ThirdPartyManager {
         files: [URL],
         rootURL: URL,
         uriPrefix: String,
+        encodedProvenance: String,
         framework: String,
         searchIndex: Search.Index
     ) async throws -> Int {
@@ -831,7 +834,7 @@ struct ThirdPartyManager {
 
             let relativePath = relativePath(from: file, to: rootURL)
             let uriSuffix = uriPathComponent(fromRelativePath: relativePath)
-            let uri = "\(uriPrefix)docs/\(uriSuffix)"
+            let uri = "\(uriPrefix)\(encodedProvenance)/docs/\(uriSuffix)"
             let title = extractMarkdownTitle(content) ?? humanizedTitle(from: file.deletingPathExtension().lastPathComponent)
 
             try await searchIndex.indexDocument(
@@ -855,6 +858,7 @@ struct ThirdPartyManager {
     private func indexDocCDocs(
         documents: [DocCIndexedDocument],
         uriPrefix: String,
+        encodedProvenance: String,
         framework: String,
         searchIndex: Search.Index
     ) async throws -> Int {
@@ -866,7 +870,7 @@ struct ThirdPartyManager {
             }
 
             try await searchIndex.indexDocument(
-                uri: "\(uriPrefix)\(document.uriSuffix)",
+                uri: "\(uriPrefix)\(encodedProvenance)/\(document.uriSuffix)",
                 source: Shared.Constants.SourcePrefix.packages,
                 framework: framework,
                 title: document.title,
@@ -1162,6 +1166,12 @@ struct ThirdPartyManager {
 
         return normalized.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
             ?? slug(normalized)
+    }
+
+    private func encodedURIPathComponent(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~@")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed)
+            ?? slug(value)
     }
 
     private func extractMarkdownTitle(_ content: String) -> String? {

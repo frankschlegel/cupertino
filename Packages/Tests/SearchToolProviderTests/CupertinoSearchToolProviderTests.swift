@@ -990,6 +990,60 @@ struct ThirdPartyOverlayIntegrationTests {
         await overlayIndex.disconnect()
     }
 
+    @Test("Packages search prioritizes API docs and shows provenance")
+    func packagesSearchPrioritizesAPIDocsAndShowsProvenance() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        try await index.indexDocument(
+            uri: "packages://acme/acme-routing",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "acme-routing",
+            content: "Reducer architecture package metadata entry.",
+            filePath: "/test/package-metadata.md",
+            contentHash: "metadata-hash",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+        try await index.indexDocument(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Getting Started",
+            content: "Reducer architecture quick start and effect handling.",
+            filePath: "/test/third-party-getting-started.md",
+            contentHash: "api-doc-hash",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+
+        let provider = CompositeToolProvider(searchIndex: index, sampleDatabase: nil)
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("reducer architecture"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.packages),
+            "limit": AnyCodable(10),
+        ]
+
+        let result = try await provider.callTool(name: "search", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            let markdown = textContent.text
+            let apiDocRange = markdown.range(of: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started")
+            let metadataRange = markdown.range(of: "packages://acme/acme-routing")
+            #expect(apiDocRange != nil)
+            #expect(metadataRange != nil)
+
+            if let apiDocRange, let metadataRange {
+                #expect(apiDocRange.lowerBound < metadataRange.lowerBound)
+            }
+
+            #expect(markdown.contains("**Provenance:** `acme/acme-routing@1.25.5`"))
+        }
+
+        await index.disconnect()
+    }
+
     @Test("read_document resolves overlay URIs transparently")
     func readDocumentResolvesOverlayURI() async throws {
         let (coreIndex, coreCleanup) = try await createTestSearchIndex()

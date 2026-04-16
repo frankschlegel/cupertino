@@ -10,6 +10,7 @@ public struct TextSearchResultFormatter: ResultFormatter {
     private let source: String?
     private let config: SearchResultFormatConfig
     private let teasers: TeaserResults?
+    private let packageProvenanceResolver: PackageProvenanceResolver
 
     public init(
         query: String,
@@ -21,6 +22,7 @@ public struct TextSearchResultFormatter: ResultFormatter {
         self.source = source
         self.config = config
         self.teasers = teasers
+        packageProvenanceResolver = .shared
     }
 
     public func format(_ results: [Search.Result]) -> String {
@@ -48,6 +50,12 @@ public struct TextSearchResultFormatter: ResultFormatter {
             output += "    \(metadata.joined(separator: " | "))\n"
 
             output += "    URI: \(result.uri)\n"
+            if let provenance = PackageResultMetadata.packageProvenance(
+                for: result,
+                resolver: packageProvenanceResolver
+            ) {
+                output += "    Provenance: \(provenance)\n"
+            }
 
             if config.showAvailability,
                let availability = result.availabilityString, !availability.isEmpty {

@@ -1,4 +1,5 @@
 import Foundation
+@testable import Search
 @testable import Services
 @testable import Shared
 import Testing
@@ -139,5 +140,54 @@ struct FormatConfigTests {
         #expect(config.showAvailability == true)
         #expect(config.showSeparators == true)
         #expect(config.emptyMessage == "_No results found. Try broader search terms._")
+    }
+}
+
+@Suite("Package Result Metadata")
+struct PackageResultMetadataTests {
+    @Test("Classifies API docs ahead of metadata-like package records")
+    func classifiesPackageRecords() {
+        let apiDoc = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/introduction",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Introduction",
+            summary: "Reducer fundamentals.",
+            filePath: "/tmp/introduction.md",
+            wordCount: 10,
+            rank: -1.0
+        )
+        let metadata = Search.Result(
+            uri: "packages://acme/acme-routing",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "acme-routing",
+            summary: "Package metadata record.",
+            filePath: "/tmp/catalog.json",
+            wordCount: 10,
+            rank: -10.0
+        )
+
+        #expect(PackageResultMetadata.isPackageAPIDocumentation(apiDoc))
+        #expect(!PackageResultMetadata.isPackageAPIDocumentation(metadata))
+
+        let prioritized = PackageResultMetadata.prioritizeAPIDocumentation([metadata, apiDoc])
+        #expect(prioritized.first?.uri == apiDoc.uri)
+    }
+
+    @Test("Extracts provenance from embedded third-party URI")
+    func extractsEmbeddedProvenance() {
+        let result = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/introduction",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Introduction",
+            summary: "Reducer fundamentals.",
+            filePath: "/tmp/introduction.md",
+            wordCount: 10,
+            rank: -1.0
+        )
+
+        #expect(PackageResultMetadata.packageProvenance(for: result) == "acme/acme-routing@1.25.5")
     }
 }
