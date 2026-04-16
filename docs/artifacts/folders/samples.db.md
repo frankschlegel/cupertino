@@ -114,7 +114,7 @@ cupertino serve
 ```
 
 The MCP server provides sample code search tools:
-- `search_samples` - Search projects and code
+- `search` (`source: "samples"`) - Search projects and code
 - `list_samples` - List all indexed projects
 - `read_sample` - Read project README
 - `read_sample_file` - Read specific source file
@@ -167,7 +167,7 @@ cupertino index --sample-code-dir ~/my-samples
 ## Used By
 
 - `cupertino serve` - MCP server for AI integration
-- MCP tools: `search_samples`, `list_samples`, `read_sample`, `read_sample_file`
+- MCP tools: `search` (`source: "samples"`), `list_samples`, `read_sample`, `read_sample_file`
 - Direct SQL queries
 - Custom search applications
 

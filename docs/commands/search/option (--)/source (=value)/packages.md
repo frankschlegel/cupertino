@@ -1,6 +1,6 @@
 # packages
 
-Swift package metadata source
+Swift package documentation and metadata source
 
 ## Synopsis
 
@@ -10,75 +10,40 @@ cupertino search <query> --source packages
 
 ## Description
 
-Filters search results to only include Swift package metadata. This is a bundled catalog of Swift packages from the Swift Package Index.
+Filters search results to package-related content:
 
-## Content
+- Third-party package docs ingested with `cupertino add`
+- Bundled package catalog metadata
 
-- **Package names** and descriptions
-- **Repository URLs**
-- **Stars and popularity metrics**
-- **License information**
-- **Keywords and categories**
+When both appear, API documentation records are ranked ahead of metadata-style records.
 
-## Typical Size
+## Provenance
 
-- **9,600+ packages** indexed
-- **Bundled** (no fetch required)
-- Updated periodically by maintainers
+Package search output includes provenance in `owner/repo@ref` form when available.
 
-## Examples
+Examples:
 
-### Search for Networking Packages
-```bash
-cupertino search "networking" --source packages
-```
-
-### Search for Database Packages
-```bash
-cupertino search "database" --source packages
-```
-
-### Search by Author
-```bash
-cupertino search "vapor" --source packages
-```
+- `pointfreeco/swift-composable-architecture@1.25.5`
+- `apple/swift-nio@2.80.0`
 
 ## URI Format
 
-Results use the `packages://` URI scheme:
-
-```
-packages://{package_name}
-```
+Results use the `packages://` URI scheme. Third-party docs are namespaced under `third-party` and include encoded provenance.
 
 ## How to Populate
 
-The packages catalog is **bundled** with Cupertino and indexed automatically:
+Bundled package catalog data is indexed by `cupertino save`.
+
+Third-party docs are managed independently (overlay DBs):
 
 ```bash
-# Just build the index (packages included automatically)
-cupertino save
+cupertino add https://github.com/pointfreeco/swift-composable-architecture@1.25.5
+cupertino update pointfreeco/swift-composable-architecture
+cupertino remove pointfreeco/swift-composable-architecture
 ```
-
-To fetch package READMEs (optional):
-
-```bash
-# Fetch README files for packages
-cupertino fetch --type package-docs
-
-# Rebuild index
-cupertino save
-```
-
-## Priority Packages
-
-36 curated high-priority packages are included:
-- **31 Apple official packages** (swift-nio, swift-argument-parser, etc.)
-- **5 essential ecosystem packages** (Alamofire, etc.)
 
 ## Notes
 
-- Bundled catalog - no download required
-- Metadata only (not full README content by default)
-- Updated periodically in Cupertino releases
-- Great for discovering Swift packages
+- Third-party docs live in `~/.cupertino/third-party/` and are not overwritten by `cupertino setup`
+- `source=packages` searches core + overlay package records together
+- `read_document` can read package URIs from either core or overlay indexes

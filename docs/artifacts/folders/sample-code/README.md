@@ -140,7 +140,7 @@ This creates `samples.db` with 18,000+ indexed source files.
 ## MCP Tools
 
 After indexing, these MCP tools become available:
-- `search_samples` - Search projects and code
+- `search` (`source: "samples"`) - Search projects and code
 - `list_samples` - List all indexed projects
 - `read_sample` - Read project README
 - `read_sample_file` - Read specific source file

@@ -21,7 +21,7 @@ Filters search results to only include documents from the specified documentatio
 | `swift-evolution` | Swift Evolution proposals |
 | `swift-org` | Swift.org documentation |
 | `swift-book` | The Swift Programming Language book |
-| `packages` | Swift package metadata |
+| `packages` | Swift package docs + package metadata |
 | `apple-sample-code` | Apple sample code projects |
 | `hig` | Human Interface Guidelines |
 | `apple-archive` | Apple Archive programming guides |
@@ -58,7 +58,7 @@ cupertino search "buttons" --source hig
 - [swift-evolution](source%20(=value)/swift-evolution.md) - Swift Evolution proposals
 - [swift-org](source%20(=value)/swift-org.md) - Swift.org documentation
 - [swift-book](source%20(=value)/swift-book.md) - The Swift Programming Language book
-- [packages](source%20(=value)/packages.md) - Swift package metadata
+- [packages](source%20(=value)/packages.md) - Swift package docs + package metadata
 - [apple-sample-code](source%20(=value)/apple-sample-code.md) - Apple sample code projects
 - [hig](source%20(=value)/hig.md) - Human Interface Guidelines
 - [apple-archive](source%20(=value)/apple-archive.md) - Apple Archive programming guides

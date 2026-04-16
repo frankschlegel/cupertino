@@ -16,7 +16,7 @@ A Swift-based tool to crawl, index, and serve Apple's developer documentation to
 
 Cupertino is a local, structured, AI-ready documentation system for Apple platforms. It:
 
-- **Crawls** Apple Developer documentation, Swift.org, Swift Evolution proposals, Human Interface Guidelines, Apple Archive legacy guides, and Swift package metadata
+- **Crawls** Apple Developer documentation, Swift.org, Swift Evolution proposals, Human Interface Guidelines, Apple Archive legacy guides, plus Swift package documentation/metadata
 - **Indexes** everything into a fast, searchable SQLite FTS5 database with BM25 ranking
 - **Serves** documentation to AI agents like Claude via the Model Context Protocol
 - **Provides** offline access to 302,424+ documentation pages across 307 frameworks
@@ -428,9 +428,9 @@ A UIKit view controller that manages a SwiftUI view hierarchy.
   - Official Swift language docs
   - Clean HTML structure
 
-- **Swift Package Metadata**
-  - Priority package catalogs
-  - README files
+- **Swift Package Documentation & Metadata**
+  - Bundled package catalog metadata
+  - Third-party package docs via `cupertino add|update|remove`
 
 - **Apple Sample Code** (606 projects)
   - Two fetch methods: GitHub (recommended) or Apple website
@@ -465,7 +465,7 @@ Cupertino includes pre-indexed catalog data bundled directly into the applicatio
   - Apple official packages (31) + essential ecosystem packages (5)
   - High-priority Swift packages for quick access
 
-These catalogs are indexed during `cupertino save` and enable instant search without requiring multi-hour downloads. You can still fetch package READMEs and sample code separately via `cupertino fetch` if needed.
+These catalogs are indexed during `cupertino save` and enable instant search without requiring multi-hour downloads. Third-party package docs are managed separately in overlay databases via `cupertino add`, `cupertino update`, and `cupertino remove`.
 
 ### 3. Full-Text Search Engine
 
@@ -487,17 +487,15 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
   - `hig://{category}/{page}`
 - **Tools**: Search and read capabilities for AI agents
   - **Documentation Tools** (requires `cupertino save`):
-    - `search_docs` - Full-text search across all documentation
-      - Parameters: `query` (required), `source`, `framework`, `min_ios`, `min_macos`, `include_archive`, `limit` (all optional)
-    - `search_hig` - Search Human Interface Guidelines
-      - Parameters: `query` (required), `platform` (optional), `category` (optional), `limit` (optional)
+    - `search` - Unified full-text search across documentation, HIG, samples, archive, and packages
+      - Parameters: `query` (required), `source`, `framework`, `language`, `include_archive`, `min_ios`, `min_macos`, `min_tvos`, `min_watchos`, `min_visionos`, `limit` (all optional)
     - `list_frameworks` - List available frameworks
     - `read_document` - Read document by URI with format option
       - Parameters: `uri` (required), `format` (optional: `json` or `markdown`, default: `json`)
       - JSON format returns the full structured document data (recommended for AI)
       - Markdown format returns rendered content for human reading
   - **Sample Code Tools** (requires `cupertino index`):
-    - `search_samples` - Search sample code projects and files
+    - `search` with `source: "samples"` - Search sample code projects and files
     - `list_samples` - List all indexed sample projects
     - `read_sample` - Read sample project README and metadata
     - `read_sample_file` - Read specific source file from a sample

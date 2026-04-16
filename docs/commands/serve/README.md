@@ -241,25 +241,17 @@ swift-evolution://{proposalID}
 
 If a search index is available, the server provides these tools:
 
-### search_docs
+### search
 
-Full-text search across all documentation.
+Unified full-text search across all indexed sources.
 
 **Parameters:**
 - `query` (required): Search keywords
-- `source` (optional): Filter by source (apple-docs, swift-book, swift-org, swift-evolution, packages, hig, apple-archive)
+- `source` (optional): Filter by source (`apple-docs`, `samples`, `apple-sample-code`, `hig`, `apple-archive`, `swift-evolution`, `swift-org`, `swift-book`, `packages`)
 - `framework` (optional): Filter by framework name
 - `language` (optional): Filter by language (swift, objc)
-- `limit` (optional): Max results (default: 20, max: 100)
-
-### search_hig
-
-Search Human Interface Guidelines with platform and category filters.
-
-**Parameters:**
-- `query` (required): Search keywords
-- `platform` (optional): Filter by platform (iOS, macOS, watchOS, visionOS, tvOS)
-- `category` (optional): Filter by category (foundations, patterns, components, inputs, technologies)
+- `include_archive` (optional): Include archive docs when source is not explicitly set
+- `min_ios`, `min_macos`, `min_tvos`, `min_watchos`, `min_visionos` (optional): Availability filters
 - `limit` (optional): Max results (default: 20, max: 100)
 
 ### list_frameworks
@@ -280,15 +272,7 @@ Read a document by URI. Returns the full document content in the requested forma
 
 If sample code is indexed (via `cupertino index`), the server provides these additional tools:
 
-### search_samples
-
-Search sample code projects and source files.
-
-**Parameters:**
-- `query` (required): Search keywords
-- `framework` (optional): Filter by framework name
-- `limit` (optional): Max results (default: 20, max: 100)
-- `search_files` (optional): Also search file contents (default: true)
+Use `search` with `source: "samples"` (or `source: "apple-sample-code"`) to search sample code projects.
 
 ### list_samples
 

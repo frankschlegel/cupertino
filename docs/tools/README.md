@@ -8,8 +8,7 @@ Cupertino provides these MCP tools for AI agents to search and read documentatio
 
 | Tool | Description |
 |------|-------------|
-| [search_docs](search_docs/) | Full-text search across all indexed documentation |
-| [search_hig](search_hig/) | Search Human Interface Guidelines with platform/category filters |
+| [search](search/) | Unified full-text search across docs/samples/HIG/archive/packages (`source` filter controls scope) |
 | [list_frameworks](list_frameworks/) | List available frameworks with document counts |
 | [read_document](read_document/) | Read a document by URI in JSON or Markdown format |
 
@@ -17,7 +16,6 @@ Cupertino provides these MCP tools for AI agents to search and read documentatio
 
 | Tool | Description |
 |------|-------------|
-| [search_samples](search_samples/) | Search sample code projects and files |
 | [list_samples](list_samples/) | List all indexed sample projects |
 | [read_sample](read_sample/) | Read sample project README |
 | [read_sample_file](read_sample_file/) | Read specific source file from a sample |
@@ -39,7 +37,7 @@ MCP tools are invoked by AI agents (like Claude) through the Model Context Proto
 
 ### Typical Workflow
 
-1. **Search** - Use `search_docs` to find relevant documentation
+1. **Search** - Use `search` to find relevant documentation
 2. **List** - Use `list_frameworks` to discover available frameworks
 3. **Read** - Use `read_document` with a URI from search results to get full content
 
@@ -47,7 +45,7 @@ MCP tools are invoked by AI agents (like Claude) through the Model Context Proto
 
 **User:** "How do actors work in Swift?"
 
-**Claude:** *calls `search_docs` with query "Actors Swift concurrency"*
+**Claude:** *calls `search` with query "Actors Swift concurrency"*
 
 **Claude:** "I found several results. Let me read the main documentation..."
 
@@ -65,7 +63,7 @@ Tools are called via JSON-RPC over stdio. Example request:
   "id": 1,
   "method": "tools/call",
   "params": {
-    "name": "search_docs",
+    "name": "search",
     "arguments": {
       "query": "Actors Swift concurrency"
     }
@@ -76,4 +74,7 @@ Tools are called via JSON-RPC over stdio. Example request:
 ## See Also
 
 - [serve command](../commands/serve/) - Start the MCP server
+- [Legacy: search_docs](search_docs/) - Compatibility docs for previous tool naming
+- [Legacy: search_hig](search_hig/) - Compatibility docs for previous tool naming
+- [Legacy: search_samples](search_samples/) - Compatibility docs for previous tool naming
 - [MCP Protocol](https://modelcontextprotocol.io) - Official MCP specification

@@ -153,11 +153,10 @@ cupertino search "navigation patterns" --source hig
 ### MCP Tool Usage
 ```json
 {
-  "name": "search_hig",
+  "name": "search",
   "arguments": {
     "query": "buttons",
-    "platform": "iOS",
-    "category": "components"
+    "source": "hig"
   }
 }
 ```

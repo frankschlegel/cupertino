@@ -10,7 +10,7 @@ cupertino search <query> [options]
 
 ## Description
 
-Searches the local documentation index using full-text search with BM25 ranking. This command provides the same search functionality as the MCP `search_docs` tool, allowing AI agents and users to search from the command line.
+Searches the local documentation index using full-text search with BM25 ranking. This command provides the same search functionality as the MCP `search` tool, allowing AI agents and users to search from the command line.
 
 Results can be output in text, JSON, or markdown format, making it easy to integrate with scripts and AI workflows.
 

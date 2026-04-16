@@ -192,7 +192,7 @@ sqlite3 ~/.cupertino/search.db \
 cupertino
 ```
 
-The MCP server provides `search_docs` and `search_hig` tools to AI assistants.
+The MCP server provides unified `search` plus related read/list tools to AI assistants.
 
 ## Search Features
 

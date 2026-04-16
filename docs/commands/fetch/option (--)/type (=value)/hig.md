@@ -196,7 +196,7 @@ cupertino search "navigation" --source hig
 ```
 
 ### Using MCP Tool
-AI agents can use the `search_hig` tool for targeted HIG searches with platform and category filters.
+AI agents can use the unified `search` tool with `source: "hig"` for targeted HIG searches.
 
 ## Performance
 

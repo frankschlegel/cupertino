@@ -138,12 +138,12 @@ let limit = min(requestedLimit, Shared.Constants.Limit.maxSearchLimit)
 | Functionality | CLI Command | MCP Tool | MCP Resource |
 |--------------|-------------|----------|--------------|
 | **Documentation** |
-| Search docs | `SearchCommand` | `search_docs` | - |
-| Search HIG | **MISSING** | `search_hig` | - |
+| Search docs | `SearchCommand` | `search` | - |
+| Search HIG | **MISSING** | `search` | - |
 | Read document | `ReadCommand` | `read_document` | `readResource` |
 | List frameworks | `ListFrameworksCommand` | `list_frameworks` | - |
 | **Sample Code** |
-| Search samples | `SearchSamplesCommand` | `search_samples` | - |
+| Search samples | `SearchSamplesCommand` | `search` | - |
 | List samples | `ListSamplesCommand` | `list_samples` | - |
 | Read sample | `ReadSampleCommand` | `read_sample` | - |
 | Read sample file | `ReadSampleFileCommand` | `read_sample_file` | - |
