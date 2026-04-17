@@ -468,7 +468,7 @@ struct ThirdPartyManager {
         try fileManager.createDirectory(at: outputRoot, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: outputRoot) }
 
-        var archives: [URL] = []
+        var doccOutputRoots: [URL] = []
         var diagnostics: [String] = []
 
         for product in libraryProducts {
@@ -489,19 +489,19 @@ struct ThirdPartyManager {
                     ],
                     cwd: rootURL
                 )
-                archives.append(contentsOf: try findDocCArchives(in: targetOutput))
+                doccOutputRoots.append(contentsOf: try findDocCOutputRoots(in: targetOutput))
             } catch {
                 diagnostics.append(compactDiagnostic("DocC build failed for '\(product)': \(error.localizedDescription)"))
             }
         }
 
-        let documents = try collectDocCDocuments(from: archives)
+        let documents = try collectDocCDocuments(from: doccOutputRoots)
         let hasFailures = !diagnostics.isEmpty
 
-        if archives.isEmpty || documents.isEmpty {
-            let extra = archives.isEmpty
-                ? "No DocC archive was produced."
-                : "DocC archive generation succeeded, but no indexable DocC JSON documents were found."
+        if doccOutputRoots.isEmpty || documents.isEmpty {
+            let extra = doccOutputRoots.isEmpty
+                ? "No DocC output was produced."
+                : "DocC output was produced, but no indexable DocC JSON documents were found."
             diagnostics.append(extra)
             return DocCBuildEvaluation(
                 status: .degraded,
@@ -572,15 +572,19 @@ struct ThirdPartyManager {
         return output.contains("generate-documentation")
     }
 
-    private func findDocCArchives(in rootURL: URL) throws -> [URL] {
-        var archives: [URL] = []
+    private func findDocCOutputRoots(in rootURL: URL) throws -> [URL] {
+        var outputRoots = Set<URL>()
+
+        if containsDocCDataDirectories(in: rootURL) {
+            outputRoots.insert(rootURL)
+        }
 
         guard let enumerator = fileManager.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return archives
+            return outputRoots.sorted { $0.path < $1.path }
         }
 
         for case let url as URL in enumerator {
@@ -589,20 +593,37 @@ struct ThirdPartyManager {
             }
 
             if url.pathExtension.lowercased() == "doccarchive" {
-                archives.append(url)
+                outputRoots.insert(url)
+                enumerator.skipDescendants()
             }
         }
 
-        return archives.sorted { $0.path < $1.path }
+        return outputRoots.sorted { $0.path < $1.path }
     }
 
-    private func collectDocCDocuments(from archives: [URL]) throws -> [DocCIndexedDocument] {
+    private func containsDocCDataDirectories(in rootURL: URL) -> Bool {
+        let candidates = [
+            rootURL.appendingPathComponent("data/documentation").path,
+            rootURL.appendingPathComponent("data/tutorials").path,
+        ]
+
+        for path in candidates {
+            var isDirectory = ObjCBool(false)
+            if fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func collectDocCDocuments(from outputRoots: [URL]) throws -> [DocCIndexedDocument] {
         var documents: [DocCIndexedDocument] = []
         var seen = Set<String>()
 
-        for archive in archives {
+        for outputRoot in outputRoots {
             guard let enumerator = fileManager.enumerator(
-                at: archive,
+                at: outputRoot,
                 includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
             ) else {
@@ -617,7 +638,7 @@ struct ThirdPartyManager {
                     continue
                 }
 
-                let relative = relativePath(from: fileURL, to: archive)
+                let relative = relativePath(from: fileURL, to: outputRoot)
                 guard relative.contains("data/documentation/") || relative.contains("data/tutorials/") else {
                     continue
                 }
@@ -648,8 +669,8 @@ struct ThirdPartyManager {
                 let title = (jsonObject.flatMap { firstString(forKey: "title", in: $0) })
                     ?? humanizedTitle(from: fileURL.deletingPathExtension().lastPathComponent)
 
-                let archiveName = archive.deletingPathExtension().lastPathComponent
-                let docPath = "\(archiveName)/\(relative)"
+                let outputName = outputRoot.deletingPathExtension().lastPathComponent
+                let docPath = "\(outputName)/\(relative)"
                 let uriSuffix = "docc/\(uriPathComponent(fromRelativePath: docPath))"
                 guard seen.insert(uriSuffix).inserted else {
                     continue
