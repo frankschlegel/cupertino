@@ -704,7 +704,7 @@ extension Shared {
             /// Read document tool description
             public static let toolReadDocumentDescription = """
             Read a document by URI. Returns the full document content in the requested format. \
-            Use URIs from search_docs results. Format parameter: 'json' (default, structured) or 'markdown' (rendered).
+            Use URIs from search results. Format parameter: 'json' (default, structured) or 'markdown' (rendered).
             """
 
             // MARK: Sample Code Tool Descriptions
@@ -718,7 +718,7 @@ extension Shared {
             /// Read sample tool description
             public static let toolReadSampleDescription = """
             Read a sample code project's README and metadata by project ID. \
-            Use project IDs from search_samples or list_samples results.
+            Use project IDs from search results with source=samples or from list_samples results.
             """
 
             /// Read sample file tool description
