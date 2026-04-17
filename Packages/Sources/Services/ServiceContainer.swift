@@ -24,7 +24,10 @@ public actor ServiceContainer {
     ) {
         self.searchDbPath = searchDbPath
         self.overlaySearchDbPath = overlaySearchDbPath ??
-            Self.resolveOverlaySearchPath(primarySearchPath: searchDbPath, customSearchPathArgument: nil)
+            Self.resolveOverlaySearchPath(
+                primarySearchPath: searchDbPath,
+                customSearchPathArgument: searchDbPath.standardizedFileURL.path
+            )
         self.sampleDbPath = sampleDbPath
     }
 

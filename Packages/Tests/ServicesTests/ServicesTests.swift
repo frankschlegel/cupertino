@@ -191,3 +191,17 @@ struct PackageResultMetadataTests {
         #expect(PackageResultMetadata.packageProvenance(for: result) == "acme/acme-routing@1.25.5")
     }
 }
+
+@Suite("ServiceContainer Overlay Path Resolution")
+struct ServiceContainerOverlayPathResolutionTests {
+    @Test("Custom search db path does not auto-attach default third-party overlay")
+    func customSearchPathDoesNotAttachDefaultOverlay() {
+        let customSearchPath = URL(fileURLWithPath: "/tmp/custom-search.db")
+        let resolvedOverlayPath = ServiceContainer.resolveOverlaySearchPath(
+            primarySearchPath: customSearchPath,
+            customSearchPathArgument: customSearchPath.path
+        )
+
+        #expect(resolvedOverlayPath == nil)
+    }
+}
