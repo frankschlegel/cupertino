@@ -37,10 +37,21 @@ Bundled package catalog data is indexed by `cupertino save`.
 Third-party docs are managed independently (overlay DBs):
 
 ```bash
+cupertino add swift-composable-architecture
+cupertino add pointfreeco/swift-composable-architecture
+cupertino add https://github.com/pointfreeco/swift-composable-architecture
 cupertino add https://github.com/pointfreeco/swift-composable-architecture@1.25.5
 cupertino update pointfreeco/swift-composable-architecture
 cupertino remove pointfreeco/swift-composable-architecture
 ```
+
+`add`/`update` accept an optional `@ref`. If omitted:
+
+- Interactive mode prompts for package disambiguation and reference selection
+- Non-interactive mode fails on ambiguous package names
+- Non-interactive mode defaults to latest stable release, then latest tag
+- Non-interactive mode fails if no release/tag can be resolved
+- `update` offers to run `add` interactively when the source is not installed
 
 ## Notes
 

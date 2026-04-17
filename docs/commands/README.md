@@ -47,6 +47,11 @@ cupertino search "async" --source swift-evolution
 cupertino search "Core Animation" --include-archive
 cupertino search "Observable" --min-ios 17.0  # Filter by iOS version
 
+# Third-party package docs overlays
+cupertino add swift-composable-architecture
+cupertino update pointfreeco/swift-composable-architecture
+cupertino remove pointfreeco/swift-composable-architecture
+
 # Read full document
 cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format markdown
 

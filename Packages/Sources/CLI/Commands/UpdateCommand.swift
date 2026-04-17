@@ -11,7 +11,7 @@ struct UpdateCommand: AsyncParsableCommand {
         abstract: "Update an already-installed third-party source in overlay databases"
     )
 
-    @Argument(help: "Source: GitHub URL with @ref or local directory path")
+    @Argument(help: "Source: local path, GitHub URL, owner/repo, or package name (optional @ref)")
     var source: String
 
     @Flag(
@@ -33,7 +33,10 @@ struct UpdateCommand: AsyncParsableCommand {
             buildOptions: .automatic(allowBuild: allowBuild, nonInteractive: nonInteractive)
         )
 
-        Logging.ConsoleLogger.info("✅ Third-party source updated")
+        let statusLine = result.mode == .added
+            ? "✅ Third-party source added (via update)"
+            : "✅ Third-party source updated"
+        Logging.ConsoleLogger.info(statusLine)
         Logging.ConsoleLogger.info("   Source: \(result.source)")
         Logging.ConsoleLogger.info("   Provenance: \(result.provenance)")
         Logging.ConsoleLogger.info("   Docs indexed: \(result.docsIndexed)")

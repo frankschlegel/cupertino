@@ -11,7 +11,7 @@ struct AddCommand: AsyncParsableCommand {
         abstract: "Ingest third-party Swift package documentation into overlay databases"
     )
 
-    @Argument(help: "Source: GitHub URL with @ref or local directory path")
+    @Argument(help: "Source: local path, GitHub URL, owner/repo, or package name (optional @ref)")
     var source: String
 
     @Flag(
