@@ -589,7 +589,7 @@ extension Shared {
 
             // MARK: Tool Names
 
-            /// Unified search tool name (replaces search_docs, search_hig, search_all, search_samples)
+            /// Unified search tool name
             public static let toolSearch = "search"
 
             /// List frameworks tool name

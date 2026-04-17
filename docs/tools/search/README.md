@@ -303,6 +303,5 @@ A type whose mutable state is protected from concurrent access...
 ## See Also
 
 - [Legacy: search_hig](../search_hig/) - Legacy alias docs
-- [Legacy: search_samples](../search_samples/) - Legacy alias docs
 - [read_document](../read_document/) - Read document content by URI
 - [list_frameworks](../list_frameworks/) - List available frameworks

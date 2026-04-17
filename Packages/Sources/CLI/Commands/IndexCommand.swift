@@ -188,7 +188,7 @@ struct IndexCommand: AsyncParsableCommand {
         Log.output("   Database: \(formatFileSize(databaseURL))")
         Log.output("")
         Log.output("💡 Sample code is now searchable via MCP tools:")
-        Log.output("   • search_samples - Search projects and code")
+        Log.output("   • search (source=samples) - Search projects and code")
         Log.output("   • list_samples - List all indexed projects")
         Log.output("   • read_sample - Read project README")
         Log.output("   • read_sample_file - Read specific source file")

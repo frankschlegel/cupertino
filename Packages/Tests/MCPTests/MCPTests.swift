@@ -114,7 +114,7 @@ struct JSONRPCProtocolTests {
         ]
 
         let outerDict: [String: AnyCodable] = [
-            "name": AnyCodable("search_docs"),
+            "name": AnyCodable("search"),
             "arguments": AnyCodable(innerDict),
         ]
 
@@ -138,7 +138,7 @@ struct JSONRPCProtocolTests {
         ]
 
         let params: [String: AnyCodable] = [
-            "name": AnyCodable("search_docs"),
+            "name": AnyCodable("search"),
             "arguments": AnyCodable(arguments),
         ]
 
@@ -159,7 +159,7 @@ struct JSONRPCProtocolTests {
             Issue.record("Failed to extract name")
             return
         }
-        #expect(name == "search_docs")
+        #expect(name == "search")
 
         // Extract arguments using dictionaryValue
         guard let extractedArgs = decoded.params?["arguments"]?.dictionaryValue else {
@@ -194,7 +194,7 @@ struct JSONRPCProtocolTests {
               "limit": 5,
               "query": "SwiftUI"
             },
-            "name": "search_docs"
+            "name": "search"
           }
         }
         """
@@ -213,7 +213,7 @@ struct JSONRPCProtocolTests {
             Issue.record("Failed to extract name")
             return
         }
-        #expect(name == "search_docs")
+        #expect(name == "search")
 
         // Extract arguments using dictionaryValue
         guard let args = request.params?["arguments"]?.dictionaryValue else {

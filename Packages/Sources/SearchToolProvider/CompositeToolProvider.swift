@@ -8,7 +8,7 @@ import Shared
 // MARK: - Unified Cupertino Tool Provider
 
 /// Composite tool provider that provides unified search across all documentation sources.
-/// Handles `search_docs` with `source` parameter to search docs, samples, HIG, archive, etc.
+/// Handles `search` with `source` parameter to search docs, samples, HIG, archive, etc.
 public actor CompositeToolProvider: ToolProvider {
     // Use service layer for consistency with CLI
     private let docsService: DocsSearchService?
@@ -177,7 +177,7 @@ public actor CompositeToolProvider: ToolProvider {
             ),
         ]
 
-        // Unified search tool (replaces search_docs, search_hig, search_all, search_samples)
+        // Unified search tool
         if searchIndex != nil || sampleDatabase != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolSearch,

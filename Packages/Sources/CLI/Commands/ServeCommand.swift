@@ -23,12 +23,12 @@ struct ServeCommand: AsyncParsableCommand {
         The server communicates via stdio using JSON-RPC and provides:
 
         Documentation Tools (requires 'cupertino save'):
-        • search_docs - Full-text search across all documentation
+        • search - Full-text search across all documentation
         • list_frameworks - List available frameworks with document counts
         • read_document - Read full document content by URI
 
         Sample Code Tools (requires 'cupertino index'):
-        • search_samples - Search sample code projects and files
+        • search (source=samples) - Search sample code projects and files
         • list_samples - List all indexed sample projects
         • read_sample - Read sample project README
         • read_sample_file - Read specific source file from a sample

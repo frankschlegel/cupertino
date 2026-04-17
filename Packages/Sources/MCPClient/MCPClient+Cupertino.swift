@@ -17,8 +17,9 @@ extension MCPClient {
     ///   - limit: Maximum number of results (default: 10)
     /// - Returns: Search results as markdown text
     public func searchDocs(query: String, limit: Int = 10) async throws -> String {
-        let result = try await callTool(name: "search_docs", arguments: [
+        let result = try await callTool(name: "search", arguments: [
             "query": AnyCodable(query),
+            "source": AnyCodable("apple-docs"),
             "limit": AnyCodable(limit),
         ])
         return extractText(from: result)
@@ -38,8 +39,9 @@ extension MCPClient {
         if let framework {
             args["framework"] = AnyCodable(framework)
         }
+        args["source"] = AnyCodable("samples")
 
-        let result = try await callTool(name: "search_samples", arguments: args)
+        let result = try await callTool(name: "search", arguments: args)
         return extractText(from: result)
     }
 

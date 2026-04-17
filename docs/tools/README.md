@@ -74,7 +74,5 @@ Tools are called via JSON-RPC over stdio. Example request:
 ## See Also
 
 - [serve command](../commands/serve/) - Start the MCP server
-- [Legacy: search_docs](search_docs/) - Compatibility docs for previous tool naming
 - [Legacy: search_hig](search_hig/) - Compatibility docs for previous tool naming
-- [Legacy: search_samples](search_samples/) - Compatibility docs for previous tool naming
 - [MCP Protocol](https://modelcontextprotocol.io) - Official MCP specification
