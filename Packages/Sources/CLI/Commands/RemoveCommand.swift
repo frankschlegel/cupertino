@@ -14,10 +14,12 @@ struct RemoveCommand: AsyncParsableCommand {
           - GitHub URL (ref optional): https://github.com/owner/repo or ...@ref
           - GitHub shorthand: owner/repo
           - Local path: /path/to/package
+          - Package name (repo):
+            exact repo match preferred; otherwise unique fuzzy repo match
         """
     )
 
-    @Argument(help: "Source selector (GitHub URL, owner/repo, or local path)")
+    @Argument(help: "Source selector (GitHub URL, owner/repo, local path, or package-name selector)")
     var source: String
 
     mutating func run() async throws {

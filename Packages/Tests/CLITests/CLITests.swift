@@ -58,6 +58,14 @@ struct CommandRegistrationTests {
         #expect(!config.abstract.isEmpty)
         #expect(config.abstract.contains("MCP"))
     }
+
+    @Test("Remove command discussion includes package-name selector support")
+    func removeCommandDiscussionIncludesPackageSelector() {
+        let discussion = RemoveCommand.configuration.discussion
+        #expect(discussion.contains("Package name"))
+        #expect(discussion.contains("exact repo match preferred"))
+        #expect(discussion.contains("unique fuzzy repo match"))
+    }
 }
 
 // MARK: - FetchType Enum Tests
