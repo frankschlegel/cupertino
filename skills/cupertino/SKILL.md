@@ -46,6 +46,59 @@ Filter by framework:
 cupertino search "@Observable" --framework swiftui --format json
 ```
 
+### Manage Third-Party Package Docs (Separate Package Index)
+Ingest and maintain third-party package docs so they appear in `--source packages` search results.
+
+Add docs:
+```bash
+cupertino add swift-composable-architecture
+cupertino add pointfreeco/swift-composable-architecture
+cupertino add https://github.com/pointfreeco/swift-composable-architecture
+cupertino add pointfreeco/swift-composable-architecture@1.25.5
+```
+
+Update/remove docs:
+```bash
+cupertino update swift-composable-architecture
+cupertino remove swift-composable-architecture
+```
+
+For agent/non-interactive execution, prefer:
+```bash
+cupertino add pointfreeco/swift-composable-architecture --non-interactive --allow-build
+cupertino update pointfreeco/swift-composable-architecture --non-interactive --allow-build
+```
+
+Accepted `add`/`update` source formats:
+- Local directory path
+- GitHub URL
+- `owner/repo`
+- Package name (`repo`)
+
+Ref resolution behavior:
+- Explicit `@ref` skips resolution prompts.
+- Non-interactive mode defaults to latest stable release, then latest tag.
+- Non-interactive mode fails if package name is ambiguous or no release/tag can be resolved.
+
+### Proactive Suggestion Guidance
+When appropriate, proactively suggest adding third-party package docs.
+
+Suggest `cupertino add <package>` if:
+- The user is asking about APIs from a known external package (e.g. TCA, Alamofire, NIO).
+- `--source packages` results are sparse/irrelevant for package-specific queries.
+- The project setup clearly depends on packages not yet indexed in Cupertino.
+
+Example suggestions:
+```bash
+cupertino add swift-composable-architecture
+cupertino add pointfreeco/swift-composable-architecture --non-interactive --allow-build
+```
+
+Do not suggest this when:
+- The question is clearly Apple-platform-only (`apple-docs`, `hig`, `swift-evolution`, etc.).
+- The user already has relevant third-party results.
+- The user explicitly wants to avoid indexing additional sources.
+
 ### Read a Document
 Retrieve full document content by URI:
 ```bash
@@ -84,7 +137,7 @@ cupertino read-sample-file "foodtrucksampleapp" "FoodTruckApp.swift" --format js
 | `swift-org` | Swift.org documentation |
 | `swift-book` | The Swift Programming Language book |
 | `apple-archive` | Legacy guides (Core Animation, Quartz 2D, KVO/KVC) |
-| `packages` | Swift package documentation |
+| `packages` | Swift package docs (bundled catalog + separate third-party package index) |
 
 ## Output Formats
 
@@ -118,3 +171,4 @@ All commands support `--format` with these options:
 - Use `--limit` to control the number of results returned
 - URIs from search results can be used directly with `cupertino read`
 - Legacy archive guides are excluded from search by default; add `--include-archive` to include them
+- When using third-party package docs in automation, pass `--non-interactive --allow-build`
