@@ -6,6 +6,178 @@ import Testing
 
 @Suite("Third-Party", .serialized)
 struct ThirdPartyTests {
+    @Test("DocC text extraction keeps readable content and filters symbol metadata noise")
+    func doccTextExtractionFiltersNoise() {
+        let json: [String: Any] = [
+            "title": "Reducer",
+            "abstract": [
+                [
+                    "type": "text",
+                    "text": "A protocol that describes how to evolve state."
+                ]
+            ],
+            "references": [
+                "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer": [
+                    "title": "Reducer",
+                    "role": "symbol"
+                ]
+            ],
+            "declarations": [
+                [
+                    "tokens": [
+                        ["kind": "keyword", "text": "protocol"],
+                        ["kind": "identifier", "text": "Reducer"],
+                    ]
+                ]
+            ],
+            "primaryContentSections": [
+                [
+                    "kind": "content",
+                    "content": [
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                [
+                                    "type": "text",
+                                    "text": "Compose reducers to model feature behavior."
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let extracted = ThirdPartyDocCTextExtractor.searchableContent(from: json)
+
+        #expect(extracted.contains("Reducer"))
+        #expect(extracted.contains("A protocol that describes how to evolve state."))
+        #expect(extracted.contains("Compose reducers to model feature behavior."))
+        #expect(!extracted.contains("doc://ComposableArchitecture"))
+        #expect(!extracted.contains("keyword"))
+        #expect(!extracted.contains("identifier"))
+        #expect(!extracted.contains("protocol Reducer"))
+    }
+
+    @Test("DocC text extraction resolves references and code voice inline")
+    func doccTextExtractionPreservesInlineReferences() {
+        let json: [String: Any] = [
+            "title": "Body",
+            "references": [
+                "doc://example/ifLet": [
+                    "title": "ifLet(_:action:)"
+                ],
+                "doc://example/forEach": [
+                    "title": "forEach(_:action:)"
+                ]
+            ],
+            "primaryContentSections": [
+                [
+                    "kind": "content",
+                    "content": [
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                ["type": "text", "text": "In the body of a reducer, use operators such as "],
+                                ["type": "reference", "identifier": "doc://example/ifLet"],
+                                ["type": "text", "text": ", "],
+                                ["type": "reference", "identifier": "doc://example/forEach"],
+                                ["type": "text", "text": ", etc."],
+                            ]
+                        ],
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                ["type": "text", "text": "If your reducer implements the "],
+                                ["type": "codeVoice", "code": "reduce(into:action:)"],
+                                ["type": "text", "text": " method, it takes precedence."],
+                            ]
+                        ],
+                    ]
+                ]
+            ]
+        ]
+
+        let extracted = ThirdPartyDocCTextExtractor.searchableContent(from: json)
+
+        #expect(extracted.contains("operators such as `ifLet(_:action:)`, `forEach(_:action:)`, etc."))
+        #expect(extracted.contains("implements the `reduce(into:action:)` method"))
+        #expect(!extracted.contains("such as , ,"))
+        #expect(!extracted.contains(" doc://"))
+    }
+
+    @Test("DocC text extraction preserves paragraph breaks and markdown code blocks")
+    func doccTextExtractionPreservesBlockFormatting() {
+        let json: [String: Any] = [
+            "title": "Example",
+            "primaryContentSections": [
+                [
+                    "kind": "content",
+                    "content": [
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                ["type": "text", "text": "First paragraph."],
+                            ]
+                        ],
+                        [
+                            "type": "codelisting",
+                            "syntax": "swift",
+                            "code": "let value = 42\nprint(value)",
+                        ],
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                ["type": "text", "text": "Second paragraph."],
+                            ]
+                        ],
+                    ]
+                ]
+            ]
+        ]
+
+        let extracted = ThirdPartyDocCTextExtractor.searchableContent(from: json)
+
+        #expect(extracted.contains("First paragraph.\n\n```swift\nlet value = 42\nprint(value)\n```"))
+        #expect(extracted.contains("```\n\nSecond paragraph."))
+    }
+
+    @Test("DocC text extraction does not split inline fragments into separate blocks")
+    func doccTextExtractionKeepsInlineFragmentsInSingleParagraph() {
+        let json: [String: Any] = [
+            "title": "Reducer(state:action:)",
+            "references": [
+                "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer()": [
+                    "title": "Reducer()"
+                ]
+            ],
+            "discussion": [
+                [
+                    "type": "content",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": "An overload of "
+                        ],
+                        [
+                            "type": "reference",
+                            "identifier": "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer()"
+                        ],
+                        [
+                            "type": "text",
+                            "text": " that takes a description of protocol conformances."
+                        ],
+                    ]
+                ]
+            ]
+        ]
+
+        let extracted = ThirdPartyDocCTextExtractor.searchableContent(from: json)
+
+        #expect(extracted.contains("An overload of `Reducer()` that takes a description of protocol conformances."))
+        #expect(!extracted.contains("An overload of\n\n`Reducer()`\n\nthat takes"))
+    }
+
     @Test("Interactive yes/no parsing is case-insensitive")
     func yesNoParsingIsCaseInsensitive() {
         #expect(ThirdPartyPrompting.parseYesNoResponse("y") == true)

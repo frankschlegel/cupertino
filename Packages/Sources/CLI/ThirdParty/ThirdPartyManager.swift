@@ -1072,16 +1072,13 @@ struct ThirdPartyManager {
                 }
 
                 let jsonObject = try? JSONSerialization.jsonObject(with: data)
-                var fragments: [String] = []
+                let searchableContent: String
                 if let jsonObject {
-                    collectJSONStrings(from: jsonObject, into: &fragments)
+                    let extracted = ThirdPartyDocCTextExtractor.searchableContent(from: jsonObject)
+                    searchableContent = extracted.isEmpty ? rawJSON : extracted
+                } else {
+                    searchableContent = rawJSON
                 }
-
-                let content = fragments
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n")
-                let searchableContent = content.isEmpty ? rawJSON : content
 
                 let title = (jsonObject.flatMap { firstString(forKey: "title", in: $0) })
                     ?? humanizedTitle(from: fileURL.deletingPathExtension().lastPathComponent)
@@ -1105,23 +1102,6 @@ struct ThirdPartyManager {
         }
 
         return documents
-    }
-
-    private func collectJSONStrings(from value: Any, into strings: inout [String]) {
-        switch value {
-        case let string as String:
-            strings.append(string)
-        case let dictionary as [String: Any]:
-            for element in dictionary.values {
-                collectJSONStrings(from: element, into: &strings)
-            }
-        case let array as [Any]:
-            for element in array {
-                collectJSONStrings(from: element, into: &strings)
-            }
-        default:
-            return
-        }
     }
 
     private func firstString(forKey key: String, in value: Any) -> String? {
@@ -2152,6 +2132,463 @@ struct ThirdPartyPrompting: Sendable {
             }
         }
     )
+}
+
+enum ThirdPartyDocCTextExtractor {
+    private static let excludedSubtrees: Set<String> = [
+        "references",
+        "declarations",
+        "metadata",
+        "navigatorindex",
+        "downloadnotavailablesummary",
+        "symbolkind",
+    ]
+
+    private static let narrativeKeys: [String] = [
+        "abstract",
+        "overview",
+        "discussion",
+        "primaryContentSections",
+        "content",
+        "inlineContent",
+        "sections",
+        "children",
+        "items",
+        "steps",
+        "caption",
+        "code",
+        "text",
+    ]
+
+    static func searchableContent(from jsonObject: Any) -> String {
+        let referenceTitles = referenceTitlesLookup(from: jsonObject)
+        var blocks: [String] = []
+
+        if let title = firstString(forKey: "title", in: jsonObject) {
+            appendInlineBlock(title, into: &blocks)
+        }
+
+        blocks.append(contentsOf: renderBlocks(
+            from: jsonObject,
+            currentKey: nil,
+            referenceTitles: referenceTitles
+        ))
+
+        return finalizeBlocks(blocks)
+    }
+
+    private static func renderBlocks(
+        from value: Any,
+        currentKey: String?,
+        referenceTitles: [String: String]
+    ) -> [String] {
+        switch value {
+        case let dictionary as [String: Any]:
+            if let currentKey, excludedSubtrees.contains(currentKey.lowercased()) {
+                return []
+            }
+
+            if let type = valueForKey("type", in: dictionary) as? String {
+                let loweredType = type.lowercased()
+                switch loweredType {
+                case "paragraph":
+                    if let paragraph = renderParagraph(from: dictionary, referenceTitles: referenceTitles) {
+                        return [paragraph]
+                    }
+                    return []
+                case "heading":
+                    let headingSource = valueForKey("text", in: dictionary)
+                        ?? valueForKey("inlineContent", in: dictionary)
+                    guard let headingSource else {
+                        return []
+                    }
+                    let heading = renderInline(from: headingSource, referenceTitles: referenceTitles)
+                    guard !heading.isEmpty else {
+                        return []
+                    }
+                    return [heading]
+                case "codelisting":
+                    return renderCodeListing(from: dictionary)
+                case "text", "codevoice", "reference":
+                    let inline = renderInline(from: dictionary, referenceTitles: referenceTitles)
+                    guard !inline.isEmpty else {
+                        return []
+                    }
+                    return [inline]
+                default:
+                    break
+                }
+            }
+
+            var blocks: [String] = []
+            for key in narrativeKeys {
+                guard let nested = valueForKey(key, in: dictionary) else {
+                    continue
+                }
+                blocks.append(contentsOf: renderBlocks(
+                    from: nested,
+                    currentKey: key.lowercased(),
+                    referenceTitles: referenceTitles
+                ))
+            }
+
+            if blocks.isEmpty {
+                let fallback = renderInline(from: dictionary, referenceTitles: referenceTitles)
+                if !fallback.isEmpty {
+                    blocks.append(fallback)
+                }
+            }
+            return blocks
+        case let array as [Any]:
+            if isInlineFragmentArray(array) {
+                let inline = renderInline(from: array, referenceTitles: referenceTitles)
+                return inline.isEmpty ? [] : [inline]
+            }
+
+            var blocks: [String] = []
+            for element in array {
+                blocks.append(contentsOf: renderBlocks(
+                    from: element,
+                    currentKey: currentKey,
+                    referenceTitles: referenceTitles
+                ))
+            }
+            return blocks
+        case let string as String:
+            guard let currentKey else {
+                return []
+            }
+            guard currentKey == "text" || currentKey == "code" else {
+                return []
+            }
+            let normalized = normalizeInlineText(string)
+            guard shouldKeep(normalized) else {
+                return []
+            }
+            return [normalized]
+        default:
+            return []
+        }
+    }
+
+    private static func renderParagraph(
+        from dictionary: [String: Any],
+        referenceTitles: [String: String]
+    ) -> String? {
+        let source = valueForKey("inlineContent", in: dictionary)
+            ?? valueForKey("content", in: dictionary)
+            ?? valueForKey("text", in: dictionary)
+        guard let source else {
+            return nil
+        }
+        let paragraph = renderInline(from: source, referenceTitles: referenceTitles)
+        return paragraph.isEmpty ? nil : paragraph
+    }
+
+    private static func renderCodeListing(from dictionary: [String: Any]) -> [String] {
+        guard let rawCode = valueForKey("code", in: dictionary) as? String else {
+            return []
+        }
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            return []
+        }
+        let syntax = (valueForKey("syntax", in: dictionary) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let language = (syntax?.isEmpty == false ? syntax! : "swift")
+        return ["```\(language)\n\(code)\n```"]
+    }
+
+    private static func renderInline(from value: Any, referenceTitles: [String: String]) -> String {
+        let fragments = renderInlineFragments(from: value, referenceTitles: referenceTitles)
+        guard !fragments.isEmpty else {
+            return ""
+        }
+        return cleanInlineSpacing(joinInlineFragments(fragments))
+    }
+
+    private static func renderInlineFragments(
+        from value: Any,
+        referenceTitles: [String: String]
+    ) -> [String] {
+        switch value {
+        case let dictionary as [String: Any]:
+            if let type = valueForKey("type", in: dictionary) as? String {
+                switch type.lowercased() {
+                case "text":
+                    if let text = valueForKey("text", in: dictionary) as? String {
+                        let normalized = normalizeInlineText(text)
+                        return shouldKeep(normalized) ? [normalized] : []
+                    }
+                    return []
+                case "codevoice":
+                    let text = (valueForKey("code", in: dictionary) as? String)
+                        ?? (valueForKey("text", in: dictionary) as? String)
+                    guard let text else {
+                        return []
+                    }
+                    let normalized = normalizeInlineText(text)
+                    guard shouldKeep(normalized) else {
+                        return []
+                    }
+                    return ["`\(escapeBackticks(normalized))`"]
+                case "reference":
+                    let reference = renderReferenceInline(from: dictionary, referenceTitles: referenceTitles)
+                    return reference.isEmpty ? [] : [reference]
+                default:
+                    break
+                }
+            }
+
+            if let inline = valueForKey("inlineContent", in: dictionary) {
+                return renderInlineFragments(from: inline, referenceTitles: referenceTitles)
+            }
+
+            if let text = valueForKey("text", in: dictionary) as? String {
+                let normalized = normalizeInlineText(text)
+                return shouldKeep(normalized) ? [normalized] : []
+            }
+            return []
+        case let array as [Any]:
+            return array.flatMap { renderInlineFragments(from: $0, referenceTitles: referenceTitles) }
+        case let string as String:
+            let normalized = normalizeInlineText(string)
+            return shouldKeep(normalized) ? [normalized] : []
+        default:
+            return []
+        }
+    }
+
+    private static func renderReferenceInline(
+        from dictionary: [String: Any],
+        referenceTitles: [String: String]
+    ) -> String {
+        if let literal = valueForKey("text", in: dictionary) as? String {
+            let normalized = normalizeInlineText(literal)
+            return shouldKeep(normalized) ? normalized : ""
+        }
+
+        guard let identifier = valueForKey("identifier", in: dictionary) as? String else {
+            return ""
+        }
+
+        let fallback = identifier.split(separator: "/").last.map(String.init)
+        let rawTitle = referenceTitles[identifier] ?? fallback ?? ""
+        let normalized = normalizeInlineText(rawTitle)
+        guard shouldKeep(normalized) else {
+            return ""
+        }
+
+        if shouldRenderAsInlineCode(normalized) {
+            return "`\(escapeBackticks(normalized))`"
+        }
+        return normalized
+    }
+
+    private static func referenceTitlesLookup(from jsonObject: Any) -> [String: String] {
+        guard let root = jsonObject as? [String: Any],
+              let references = valueForKey("references", in: root) as? [String: Any] else {
+            return [:]
+        }
+
+        var titles: [String: String] = [:]
+        titles.reserveCapacity(references.count)
+
+        for (identifier, value) in references {
+            guard let reference = value as? [String: Any],
+                  let title = valueForKey("title", in: reference) as? String else {
+                continue
+            }
+
+            let normalized = normalizeInlineText(title)
+            guard shouldKeep(normalized) else {
+                continue
+            }
+            titles[identifier] = normalized
+        }
+
+        return titles
+    }
+
+    private static func valueForKey(_ key: String, in dictionary: [String: Any]) -> Any? {
+        if let exact = dictionary[key] {
+            return exact
+        }
+        let lowercasedKey = key.lowercased()
+        return dictionary.first(where: { $0.key.lowercased() == lowercasedKey })?.value
+    }
+
+    private static func appendInlineBlock(_ value: String?, into blocks: inout [String]) {
+        guard let value else {
+            return
+        }
+        let normalized = normalizeInlineText(value)
+        guard shouldKeep(normalized) else {
+            return
+        }
+        if blocks.last != normalized {
+            blocks.append(normalized)
+        }
+    }
+
+    private static func finalizeBlocks(_ blocks: [String]) -> String {
+        var deduped: [String] = []
+        deduped.reserveCapacity(blocks.count)
+
+        for rawBlock in blocks {
+            let normalizedBlock: String
+            if rawBlock.hasPrefix("```") {
+                normalizedBlock = rawBlock
+            } else {
+                normalizedBlock = cleanInlineSpacing(rawBlock)
+            }
+
+            let trimmed = normalizedBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                continue
+            }
+
+            if deduped.last != trimmed {
+                deduped.append(trimmed)
+            }
+        }
+
+        return deduped.joined(separator: "\n\n")
+    }
+
+    private static func isInlineFragmentArray(_ array: [Any]) -> Bool {
+        guard !array.isEmpty else {
+            return false
+        }
+
+        return array.allSatisfy { element in
+            guard let dictionary = element as? [String: Any],
+                  let type = valueForKey("type", in: dictionary) as? String else {
+                return false
+            }
+
+            switch type.lowercased() {
+            case "text", "reference", "codevoice", "emphasis", "strong", "link":
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func joinInlineFragments(_ fragments: [String]) -> String {
+        var output = ""
+
+        for fragment in fragments {
+            let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                continue
+            }
+
+            guard !output.isEmpty else {
+                output = trimmed
+                continue
+            }
+
+            if shouldAvoidSpace(before: trimmed) || shouldAvoidSpace(after: output) {
+                output += trimmed
+            } else {
+                output += " " + trimmed
+            }
+        }
+
+        return output
+    }
+
+    private static func shouldAvoidSpace(before fragment: String) -> Bool {
+        guard let first = fragment.first else {
+            return false
+        }
+        return ",.;:!?)]}".contains(first)
+    }
+
+    private static func shouldAvoidSpace(after output: String) -> Bool {
+        guard let last = output.last else {
+            return false
+        }
+        return "([{".contains(last)
+    }
+
+    private static func cleanInlineSpacing(_ value: String) -> String {
+        var normalized = normalizeInlineText(value)
+        normalized = normalized.replacingOccurrences(
+            of: #"\s+([,.;:!?])"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        normalized = normalized.replacingOccurrences(
+            of: #"([(\[{])\s+"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        normalized = normalized.replacingOccurrences(
+            of: #"\s+([)\]}])"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        return normalized
+    }
+
+    private static func shouldRenderAsInlineCode(_ value: String) -> Bool {
+        value.contains("(")
+            || value.contains(")")
+            || value.contains(":")
+            || value.contains("<")
+            || value.contains(">")
+            || value.contains("_")
+            || value.contains(".")
+    }
+
+    private static func escapeBackticks(_ value: String) -> String {
+        value.replacingOccurrences(of: "`", with: "\\`")
+    }
+
+    private static func shouldKeep(_ value: String) -> Bool {
+        guard !value.isEmpty else {
+            return false
+        }
+        if value.hasPrefix("doc://") || value.hasPrefix("s:") {
+            return false
+        }
+        return true
+    }
+
+    private static func normalizeInlineText(_ value: String) -> String {
+        value
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func firstString(forKey key: String, in value: Any) -> String? {
+        switch value {
+        case let dictionary as [String: Any]:
+            if let direct = dictionary[key] as? String {
+                return direct
+            }
+            for nested in dictionary.values {
+                if let found = firstString(forKey: key, in: nested) {
+                    return found
+                }
+            }
+        case let array as [Any]:
+            for nested in array {
+                if let found = firstString(forKey: key, in: nested) {
+                    return found
+                }
+            }
+        default:
+            break
+        }
+        return nil
+    }
 }
 
 private struct ThirdPartySource {
