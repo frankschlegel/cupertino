@@ -1,3 +1,4 @@
+import Core
 import Foundation
 import Logging
 import SampleIndex
@@ -19,12 +20,33 @@ struct ThirdPartyManager {
     private let searchDBURL: URL
     private let samplesDBURL: URL
     private let manifestURL: URL
+    private let packageLookup: ThirdPartyPackageLookup
+    private let gitHubRefDiscovery: ThirdPartyGitHubRefDiscovery
+    private let prompting: ThirdPartyPrompting
+    private let interactionDetector: (Bool) -> Bool
 
-    init(storeURL: URL = Shared.Constants.defaultThirdPartyDirectory) {
+    init(
+        storeURL: URL = Shared.Constants.defaultThirdPartyDirectory,
+        packageLookup: ThirdPartyPackageLookup = .live,
+        gitHubRefDiscovery: ThirdPartyGitHubRefDiscovery = .live,
+        prompting: ThirdPartyPrompting = .terminal,
+        interactionDetector: @escaping (Bool) -> Bool = ThirdPartyManager.defaultInteractionDetector
+    ) {
         self.storeURL = storeURL
         searchDBURL = storeURL.appendingPathComponent(Shared.Constants.FileName.searchDatabase)
         samplesDBURL = storeURL.appendingPathComponent(Shared.Constants.FileName.samplesDatabase)
         manifestURL = storeURL.appendingPathComponent(Shared.Constants.FileName.thirdPartyManifest)
+        self.packageLookup = packageLookup
+        self.gitHubRefDiscovery = gitHubRefDiscovery
+        self.prompting = prompting
+        self.interactionDetector = interactionDetector
+    }
+
+    private static func defaultInteractionDetector(_ nonInteractiveFlag: Bool) -> Bool {
+        guard !nonInteractiveFlag else {
+            return false
+        }
+        return isatty(fileno(stdin)) != 0 && isatty(fileno(stdout)) != 0
     }
 
     // MARK: - Public API
@@ -110,13 +132,16 @@ struct ThirdPartyManager {
     ) async throws -> ThirdPartyOperationResult {
         try prepareStore()
 
-        let parsed = try ThirdPartySource.parse(sourceInput, requireLocalPathExists: true)
         var manifest = try loadManifest()
-        let existingIndex = manifest.installs.firstIndex(where: { $0.identityKey == parsed.identityKey })
-
-        if mode == .update, existingIndex == nil {
-            throw ThirdPartyManagerError.notInstalled(parsed.identityKey)
-        }
+        let resolution = try await resolveUpsertInput(
+            sourceInput: sourceInput,
+            mode: mode,
+            buildOptions: buildOptions,
+            manifest: manifest
+        )
+        let parsed = resolution.source
+        let effectiveMode = resolution.mode
+        let existingIndex = resolution.existingIndex
 
         let materialized = try materialize(source: parsed)
         defer {
@@ -136,7 +161,7 @@ struct ThirdPartyManager {
             sourceRoot: materialized.rootURL
         )
         let snapshotHash = computeSnapshotHash(records: hashRecords, identityKey: parsed.identityKey)
-        let effectiveRef = parsed.reference(derivedLocalSnapshotHash: snapshotHash)
+        let effectiveRef = try parsed.reference(derivedLocalSnapshotHash: snapshotHash)
         let provenance = parsed.provenance(reference: effectiveRef)
         let encodedProvenance = encodedURIPathComponent(provenance)
         let doccBuild = try evaluateDocCBuild(
@@ -223,7 +248,7 @@ struct ThirdPartyManager {
         try saveManifest(manifest)
 
         return ThirdPartyOperationResult(
-            mode: mode == .add ? .added : .updated,
+            mode: effectiveMode == .add ? .added : .updated,
             source: parsed.displaySource,
             provenance: provenance,
             docsIndexed: docsIndexed,
@@ -234,6 +259,343 @@ struct ThirdPartyManager {
             sampleFilesIndexed: sampleCounts.files,
             manifestPath: manifestURL
         )
+    }
+
+    private struct ResolvedUpsertInput {
+        let source: ThirdPartySource
+        let mode: UpsertMode
+        let existingIndex: Int?
+    }
+
+    private func resolveUpsertInput(
+        sourceInput: String,
+        mode: UpsertMode,
+        buildOptions: ThirdPartyBuildOptions,
+        manifest: ThirdPartyManifest
+    ) async throws -> ResolvedUpsertInput {
+        let unresolvedSource = try await parseSourceInput(sourceInput, buildOptions: buildOptions)
+        let existingIndex = manifest.installs.firstIndex(where: { $0.identityKey == unresolvedSource.identityKey })
+
+        var effectiveMode = mode
+        if mode == .add, existingIndex != nil {
+            throw ThirdPartyManagerError.alreadyInstalledForAdd(unresolvedSource.displaySource)
+        }
+
+        if mode == .update, existingIndex == nil {
+            if isInteractiveSession(nonInteractiveFlag: buildOptions.nonInteractive) {
+                if prompting.confirmAddForMissingUpdate(unresolvedSource.displaySource) {
+                    effectiveMode = .add
+                } else {
+                    throw ThirdPartyManagerError.updateCancelled(unresolvedSource.displaySource)
+                }
+            } else {
+                throw ThirdPartyManagerError.notInstalledForUpdate(unresolvedSource.displaySource)
+            }
+        }
+
+        let resolvedSource = try await resolveGitReferenceIfNeeded(
+            source: unresolvedSource,
+            buildOptions: buildOptions
+        )
+
+        return ResolvedUpsertInput(
+            source: resolvedSource,
+            mode: effectiveMode,
+            existingIndex: existingIndex
+        )
+    }
+
+    // MARK: - Source Resolution
+
+    private func parseSourceInput(
+        _ sourceInput: String,
+        buildOptions: ThirdPartyBuildOptions
+    ) async throws -> ThirdPartySource {
+        let trimmed = sourceInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ThirdPartyManagerError.invalidSource("Source cannot be empty")
+        }
+
+        if let localPath = localDirectoryIfExists(trimmed) {
+            return ThirdPartySource.local(path: localPath)
+        }
+
+        let (source, explicitRef) = try splitSourceAndReference(trimmed)
+
+        if let localPath = localDirectoryIfExists(source) {
+            return ThirdPartySource.local(path: localPath)
+        }
+
+        if source.hasPrefix("http://") || source.hasPrefix("https://") {
+            return try parseGitHubURLSource(source, explicitRef: explicitRef)
+        }
+
+        if let ownerRepoSource = parseOwnerRepoSource(source, explicitRef: explicitRef) {
+            return ownerRepoSource
+        }
+
+        if source.contains("/") {
+            throw ThirdPartyManagerError.invalidSource(
+                "Source must be an existing local directory, github.com URL, owner/repo, or package name."
+            )
+        }
+
+        return try await resolvePackageNameSource(
+            query: source,
+            explicitRef: explicitRef,
+            buildOptions: buildOptions
+        )
+    }
+
+    private func parseGitHubURLSource(
+        _ rawURL: String,
+        explicitRef: String?
+    ) throws -> ThirdPartySource {
+        guard let url = URL(string: rawURL),
+              let host = url.host?.lowercased(),
+              host == "github.com" || host == "www.github.com" else {
+            throw ThirdPartyManagerError.invalidSource("GitHub source must be a github.com URL")
+        }
+
+        let components = url.path.split(separator: "/").map(String.init)
+        guard components.count >= 2 else {
+            throw ThirdPartyManagerError.invalidSource("GitHub URL must include owner and repository")
+        }
+
+        let owner = components[0].lowercased()
+        var repo = components[1].lowercased()
+        if repo.hasSuffix(".git") {
+            repo = String(repo.dropLast(4))
+        }
+
+        guard isValidGitHubIdentifier(owner), isValidGitHubIdentifier(repo),
+              let canonicalURL = URL(string: "https://github.com/\(owner)/\(repo)") else {
+            throw ThirdPartyManagerError.invalidSource("GitHub URL must include owner and repository")
+        }
+
+        return ThirdPartySource.github(
+            url: canonicalURL,
+            owner: owner,
+            repo: repo,
+            ref: explicitRef
+        )
+    }
+
+    private func parseOwnerRepoSource(
+        _ value: String,
+        explicitRef: String?
+    ) -> ThirdPartySource? {
+        let components = value.split(separator: "/").map(String.init)
+        guard components.count == 2 else {
+            return nil
+        }
+
+        let owner = components[0].lowercased()
+        var repo = components[1].lowercased()
+        if repo.hasSuffix(".git") {
+            repo = String(repo.dropLast(4))
+        }
+
+        guard isValidGitHubIdentifier(owner), isValidGitHubIdentifier(repo),
+              let canonicalURL = URL(string: "https://github.com/\(owner)/\(repo)") else {
+            return nil
+        }
+
+        return ThirdPartySource.github(
+            url: canonicalURL,
+            owner: owner,
+            repo: repo,
+            ref: explicitRef
+        )
+    }
+
+    private func resolvePackageNameSource(
+        query: String,
+        explicitRef: String?,
+        buildOptions: ThirdPartyBuildOptions
+    ) async throws -> ThirdPartySource {
+        let lowercasedQuery = query.lowercased()
+        let packages = await packageLookup.allPackages()
+
+        let exactMatches = sortedPackageCandidates(
+            packages.filter { $0.repo.lowercased() == lowercasedQuery }
+        )
+
+        let candidatesToUse: [ThirdPartyPackageCandidate]
+        if !exactMatches.isEmpty {
+            candidatesToUse = exactMatches
+        } else {
+            let fuzzyMatches = sortedPackageCandidates(
+                packages.filter { $0.repo.lowercased().contains(lowercasedQuery) }
+            )
+            guard !fuzzyMatches.isEmpty else {
+                throw ThirdPartyManagerError.packageNameNotFound(query)
+            }
+            candidatesToUse = fuzzyMatches
+        }
+
+        let selected: ThirdPartyPackageCandidate
+        if candidatesToUse.count == 1, let only = candidatesToUse.first {
+            selected = only
+        } else if isInteractiveSession(nonInteractiveFlag: buildOptions.nonInteractive) {
+            guard let choice = prompting.selectPackage(query, candidatesToUse) else {
+                throw ThirdPartyManagerError.selectionCancelled("Package selection cancelled for '\(query)'.")
+            }
+            selected = choice
+        } else {
+            throw ThirdPartyManagerError.ambiguousPackageName(
+                query,
+                candidatesToUse.prefix(12).map { "\($0.owner)/\($0.repo)" }
+            )
+        }
+
+        guard let canonicalURL = URL(string: "https://github.com/\(selected.owner)/\(selected.repo)") else {
+            throw ThirdPartyManagerError.invalidSource("Unable to normalize GitHub URL for \(selected.owner)/\(selected.repo)")
+        }
+
+        return ThirdPartySource.github(
+            url: canonicalURL,
+            owner: selected.owner,
+            repo: selected.repo,
+            ref: explicitRef
+        )
+    }
+
+    private func sortedPackageCandidates(_ candidates: [ThirdPartyPackageCandidate]) -> [ThirdPartyPackageCandidate] {
+        candidates.sorted { lhs, rhs in
+            if lhs.stars == rhs.stars {
+                if lhs.owner == rhs.owner {
+                    return lhs.repo < rhs.repo
+                }
+                return lhs.owner < rhs.owner
+            }
+            return lhs.stars > rhs.stars
+        }
+    }
+
+    private func resolveGitReferenceIfNeeded(
+        source: ThirdPartySource,
+        buildOptions: ThirdPartyBuildOptions
+    ) async throws -> ThirdPartySource {
+        guard case let .github(_, owner, repo, ref) = source.location else {
+            return source
+        }
+
+        if let ref, !ref.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return source
+        }
+
+        let snapshot: ThirdPartyGitHubReferenceSnapshot
+        do {
+            snapshot = try await gitHubRefDiscovery.discover(owner, repo)
+        } catch {
+            throw ThirdPartyManagerError.gitHubReferenceLookupFailed("\(owner)/\(repo)", error.localizedDescription)
+        }
+
+        if isInteractiveSession(nonInteractiveFlag: buildOptions.nonInteractive) {
+            let choices = buildGitReferenceChoices(from: snapshot)
+            guard let selected = prompting.selectReference(source.displaySource, choices) else {
+                throw ThirdPartyManagerError.selectionCancelled("Reference selection cancelled for '\(source.displaySource)'.")
+            }
+            let sanitized = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sanitized.isEmpty else {
+                throw ThirdPartyManagerError.selectionCancelled("Reference selection cancelled for '\(source.displaySource)'.")
+            }
+            return source.withGitReference(sanitized)
+        }
+
+        if let defaultRef = nonInteractiveDefaultReference(from: snapshot) {
+            return source.withGitReference(defaultRef)
+        }
+
+        throw ThirdPartyManagerError.noResolvableReference("\(owner)/\(repo)")
+    }
+
+    private func buildGitReferenceChoices(
+        from snapshot: ThirdPartyGitHubReferenceSnapshot
+    ) -> [ThirdPartyGitReferenceChoice] {
+        var choices: [ThirdPartyGitReferenceChoice] = []
+        var seen = Set<String>()
+
+        for release in snapshot.stableReleases {
+            guard seen.insert(release).inserted else {
+                continue
+            }
+            choices.append(
+                ThirdPartyGitReferenceChoice(
+                    ref: release,
+                    label: "Release \(release)",
+                    kind: .release
+                )
+            )
+        }
+
+        for tag in snapshot.tags {
+            guard seen.insert(tag).inserted else {
+                continue
+            }
+            choices.append(
+                ThirdPartyGitReferenceChoice(
+                    ref: tag,
+                    label: "Tag \(tag)",
+                    kind: .tag
+                )
+            )
+        }
+
+        if let branch = snapshot.defaultBranch, seen.insert(branch).inserted {
+            choices.append(
+                ThirdPartyGitReferenceChoice(
+                    ref: branch,
+                    label: "Default branch (\(branch))",
+                    kind: .branch
+                )
+            )
+        }
+
+        return choices
+    }
+
+    private func nonInteractiveDefaultReference(
+        from snapshot: ThirdPartyGitHubReferenceSnapshot
+    ) -> String? {
+        snapshot.stableReleases.first ?? snapshot.tags.first
+    }
+
+    private func splitSourceAndReference(_ value: String) throws -> (source: String, ref: String?) {
+        guard let atIndex = value.lastIndex(of: "@") else {
+            return (value, nil)
+        }
+
+        let source = String(value[..<atIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let ref = String(value[value.index(after: atIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !source.isEmpty else {
+            throw ThirdPartyManagerError.invalidSource("Source cannot be empty")
+        }
+        guard !ref.isEmpty else {
+            throw ThirdPartyManagerError.invalidSource("Reference after '@' cannot be empty")
+        }
+
+        return (source, ref)
+    }
+
+    private func localDirectoryIfExists(_ value: String) -> URL? {
+        let normalized = normalizedLocalPath(from: value)
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: normalized.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return normalized
+    }
+
+    private func isValidGitHubIdentifier(_ value: String) -> Bool {
+        guard !value.isEmpty else {
+            return false
+        }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        return value.rangeOfCharacter(from: allowed.inverted) == nil
     }
 
     // MARK: - Store
@@ -292,6 +654,12 @@ struct ThirdPartyManager {
             }
         }
 
+        if matched.isEmpty {
+            matched.formUnion(
+                resolveByPackageNameSelector(trimmed, installs: manifest.installs)
+            )
+        }
+
         if matched.count == 1, let index = matched.first {
             return index
         }
@@ -309,6 +677,45 @@ struct ThirdPartyManager {
         throw ThirdPartyManagerError.ambiguousRemoveSelector(selector, options)
     }
 
+    private func resolveByPackageNameSelector(
+        _ selector: String,
+        installs: [ThirdPartyInstallation]
+    ) -> Set<Int> {
+        let query = selector
+            .split(separator: "@", maxSplits: 1)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        guard !query.isEmpty,
+              !query.contains("/"),
+              !query.hasPrefix("http://"),
+              !query.hasPrefix("https://") else {
+            return []
+        }
+
+        let exactMatches = installs.enumerated().compactMap { index, install -> Int? in
+            guard let repo = install.repo?.lowercased(), repo == query else {
+                return nil
+            }
+            return index
+        }
+
+        if !exactMatches.isEmpty {
+            return Set(exactMatches)
+        }
+
+        let fuzzyMatches = installs.enumerated().compactMap { index, install -> Int? in
+            guard let repo = install.repo?.lowercased(), repo.contains(query) else {
+                return nil
+            }
+            return index
+        }
+
+        return Set(fuzzyMatches)
+    }
+
     // MARK: - Source Materialization
 
     private struct MaterializedSource {
@@ -321,6 +728,10 @@ struct ThirdPartyManager {
         case let .local(path):
             return MaterializedSource(rootURL: path, cleanup: nil)
         case let .github(url, _, _, ref):
+            guard let ref, !ref.isEmpty else {
+                throw ThirdPartyManagerError.noResolvableReference(source.displaySource)
+            }
+            Logging.ConsoleLogger.info("   Fetching source: \(source.displaySource) @ \(ref)")
             let tempDir = fileManager.temporaryDirectory
                 .appendingPathComponent("cupertino-third-party-\(UUID().uuidString)")
             try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -430,6 +841,7 @@ struct ThirdPartyManager {
             }
         }
 
+        Logging.ConsoleLogger.info("   Preparing DocC build for \(source.displaySource)")
         let libraryProducts: [String]
         do {
             libraryProducts = try discoverLibraryProducts(in: rootURL)
@@ -471,8 +883,9 @@ struct ThirdPartyManager {
         var doccOutputRoots: [URL] = []
         var diagnostics: [String] = []
 
-        for product in libraryProducts {
+        for (index, product) in libraryProducts.enumerated() {
             let targetOutput = outputRoot.appendingPathComponent(product)
+            Logging.ConsoleLogger.info("   Building DocC for \(product) (\(index + 1)/\(libraryProducts.count))")
             do {
                 try fileManager.createDirectory(at: targetOutput, withIntermediateDirectories: true)
                 _ = try runSwiftPackage(
@@ -490,8 +903,10 @@ struct ThirdPartyManager {
                     cwd: rootURL
                 )
                 doccOutputRoots.append(contentsOf: try findDocCOutputRoots(in: targetOutput))
+                Logging.ConsoleLogger.info("   Finished DocC build for \(product)")
             } catch {
                 diagnostics.append(compactDiagnostic("DocC build failed for '\(product)': \(error.localizedDescription)"))
+                Logging.ConsoleLogger.info("   DocC build failed for \(product), continuing")
             }
         }
 
@@ -522,22 +937,24 @@ struct ThirdPartyManager {
     }
 
     private func isInteractiveSession(nonInteractiveFlag: Bool) -> Bool {
-        guard !nonInteractiveFlag else {
-            return false
-        }
-        return isatty(fileno(stdin)) != 0 && isatty(fileno(stdout)) != 0
+        interactionDetector(nonInteractiveFlag)
     }
 
     private func requestBuildConsent(for source: String) -> Bool {
-        print("DocC generation can run build/plugin commands for '\(source)'. Continue? [y/N]: ", terminator: "")
-        fflush(stdout)
+        while true {
+            print("DocC generation can run build/plugin commands for '\(source)'. Continue? [y/n]: ", terminator: "")
+            fflush(stdout)
 
-        guard let response = readLine(strippingNewline: true)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() else {
-            return false
+            let response = readLine(strippingNewline: true)
+            guard let decision = ThirdPartyPrompting.parseYesNoResponse(response) else {
+                if response == nil {
+                    return false
+                }
+                print("Please enter y/yes or n/no.")
+                continue
+            }
+            return decision
         }
-        return response == "y" || response == "yes"
     }
 
     private func discoverLibraryProducts(in rootURL: URL) throws -> [String] {
@@ -1469,6 +1886,274 @@ private struct ThirdPartyInstallation: Codable {
 
 // MARK: - Source Parsing
 
+struct ThirdPartyPackageCandidate: Sendable {
+    let owner: String
+    let repo: String
+    let url: String
+    let stars: Int
+    let summary: String?
+}
+
+struct ThirdPartyPackageLookup: Sendable {
+    let allPackages: @Sendable () async -> [ThirdPartyPackageCandidate]
+
+    static let live = ThirdPartyPackageLookup {
+        await SwiftPackagesCatalog.allPackages.map { package in
+            ThirdPartyPackageCandidate(
+                owner: package.owner.lowercased(),
+                repo: package.repo.lowercased(),
+                url: package.url,
+                stars: package.stars,
+                summary: package.description
+            )
+        }
+    }
+}
+
+struct ThirdPartyGitHubReferenceSnapshot: Sendable {
+    let stableReleases: [String]
+    let tags: [String]
+    let defaultBranch: String?
+}
+
+struct ThirdPartyGitReferenceChoice: Sendable {
+    enum Kind: String, Sendable {
+        case release
+        case tag
+        case branch
+    }
+
+    let ref: String
+    let label: String
+    let kind: Kind
+}
+
+struct ThirdPartyGitHubRefDiscovery: Sendable {
+    let discover: @Sendable (_ owner: String, _ repo: String) async throws -> ThirdPartyGitHubReferenceSnapshot
+
+    static let live = ThirdPartyGitHubRefDiscovery { owner, repo in
+        try await discoverLiveSnapshot(owner: owner, repo: repo)
+    }
+
+    private static func discoverLiveSnapshot(
+        owner: String,
+        repo: String
+    ) async throws -> ThirdPartyGitHubReferenceSnapshot {
+        async let repositoryInfo: RepoResponse = request(
+            url: URL(string: "\(Shared.Constants.BaseURL.githubAPIRepos)/\(owner)/\(repo)")!
+        )
+        async let releases: [ReleaseResponse] = request(
+            url: URL(string: "\(Shared.Constants.BaseURL.githubAPIRepos)/\(owner)/\(repo)/releases?per_page=20")!
+        )
+        async let tags: [TagResponse] = request(
+            url: URL(string: "\(Shared.Constants.BaseURL.githubAPIRepos)/\(owner)/\(repo)/tags?per_page=20")!
+        )
+
+        let repoData = try await repositoryInfo
+        let releaseData = try await releases
+        let tagData = try await tags
+
+        let stableReleases = uniqueOrdered(
+            releaseData
+                .filter { !$0.draft && !$0.prerelease }
+                .compactMap { value in
+                    let trimmed = value.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+        )
+
+        let tagRefs = uniqueOrdered(
+            tagData.compactMap { value in
+                let trimmed = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+        )
+
+        return ThirdPartyGitHubReferenceSnapshot(
+            stableReleases: stableReleases,
+            tags: tagRefs,
+            defaultBranch: repoData.defaultBranch
+        )
+    }
+
+    private static func request<T: Decodable>(url: URL) async throws -> T {
+        var request = URLRequest(url: url)
+        request.setValue(Shared.Constants.HTTPHeader.githubAccept, forHTTPHeaderField: Shared.Constants.HTTPHeader.accept)
+        request.setValue(Shared.Constants.App.userAgent, forHTTPHeaderField: Shared.Constants.HTTPHeader.userAgent)
+
+        if let token = ProcessInfo.processInfo.environment[Shared.Constants.EnvVar.githubToken] {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: Shared.Constants.HTTPHeader.authorization)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw ThirdPartyManagerError.gitHubRequestFailed(url.absoluteString)
+        }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(T.self, from: data)
+    }
+
+    private static func uniqueOrdered(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+
+    private struct RepoResponse: Decodable {
+        let defaultBranch: String?
+    }
+
+    private struct ReleaseResponse: Decodable {
+        let tagName: String
+        let draft: Bool
+        let prerelease: Bool
+    }
+
+    private struct TagResponse: Decodable {
+        let name: String
+    }
+}
+
+struct ThirdPartyPrompting: Sendable {
+    let selectPackage: @Sendable (_ query: String, _ candidates: [ThirdPartyPackageCandidate]) -> ThirdPartyPackageCandidate?
+    let selectReference: @Sendable (_ sourceDisplay: String, _ choices: [ThirdPartyGitReferenceChoice]) -> String?
+    let confirmAddForMissingUpdate: @Sendable (_ sourceDisplay: String) -> Bool
+
+    static func parseYesNoResponse(_ rawResponse: String?) -> Bool? {
+        guard let response = rawResponse?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !response.isEmpty else {
+            return nil
+        }
+
+        switch response {
+        case "y", "yes":
+            return true
+        case "n", "no":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    static let terminal = ThirdPartyPrompting(
+        selectPackage: { query, candidates in
+            let options = Array(candidates.prefix(20))
+            guard !options.isEmpty else {
+                return nil
+            }
+
+            while true {
+                print("Package name '\(query)' matches multiple packages:")
+                for (index, option) in options.enumerated() {
+                    let stars = option.stars > 0 ? " ⭐\(option.stars)" : ""
+                    let summary = option.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let preview = summary.isEmpty ? "" : " — \(String(summary.prefix(70)))"
+                    print("  \(index + 1). \(option.owner)/\(option.repo)\(stars)\(preview)")
+                }
+                print("Choose package [1-\(options.count)] (q to cancel): ", terminator: "")
+                fflush(stdout)
+
+                guard let response = readLine(strippingNewline: true)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() else {
+                    return nil
+                }
+
+                if response == "q" || response == "quit" || response == "n" || response == "no" {
+                    return nil
+                }
+
+                if let numeric = Int(response), numeric >= 1, numeric <= options.count {
+                    return options[numeric - 1]
+                }
+
+                print("Invalid selection. Enter a number from 1-\(options.count), or q to cancel.")
+            }
+        },
+        selectReference: { sourceDisplay, choices in
+            let options = Array(choices.prefix(20))
+            while true {
+                if options.isEmpty {
+                    print("No releases or tags were found for '\(sourceDisplay)'.")
+                } else {
+                    print("Select a reference for '\(sourceDisplay)':")
+                    for (index, choice) in options.enumerated() {
+                        print("  \(index + 1). \(choice.label)")
+                    }
+                }
+
+                print("  m. Enter custom reference")
+                if !options.isEmpty {
+                    print("Choose reference [1-\(options.count), m] (Enter for 1, q to cancel): ", terminator: "")
+                } else {
+                    print("Choose [m] for custom reference (q to cancel): ", terminator: "")
+                }
+                fflush(stdout)
+
+                guard let response = readLine(strippingNewline: true)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() else {
+                    return nil
+                }
+
+                if response == "q" || response == "quit" || response == "n" || response == "no" {
+                    return nil
+                }
+
+                if response.isEmpty, let first = options.first {
+                    return first.ref
+                }
+
+                if response == "m" || response == "manual" {
+                    print("Enter reference (tag/branch/SHA): ", terminator: "")
+                    fflush(stdout)
+                    guard let manual = readLine(strippingNewline: true)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                        !manual.isEmpty else {
+                        print("Reference cannot be empty.")
+                        continue
+                    }
+                    return manual
+                }
+
+                if let numeric = Int(response), numeric >= 1, numeric <= options.count {
+                    return options[numeric - 1].ref
+                }
+
+                if options.isEmpty {
+                    print("Invalid selection. Enter m for manual reference, or q to cancel.")
+                } else {
+                    print("Invalid selection. Enter 1-\(options.count), m, or q.")
+                }
+            }
+        },
+        confirmAddForMissingUpdate: { sourceDisplay in
+            while true {
+                print("No installed source matches '\(sourceDisplay)'. Add it instead? [y/n]: ", terminator: "")
+                fflush(stdout)
+
+                let response = readLine(strippingNewline: true)
+                guard let decision = parseYesNoResponse(response) else {
+                    if response == nil {
+                        return false
+                    }
+                    print("Please enter y/yes or n/no.")
+                    continue
+                }
+                return decision
+            }
+        }
+    )
+}
+
 private struct ThirdPartySource {
     enum Kind: String {
         case github
@@ -1476,7 +2161,7 @@ private struct ThirdPartySource {
     }
 
     enum Location {
-        case github(url: URL, owner: String, repo: String, ref: String)
+        case github(url: URL, owner: String, repo: String, ref: String?)
         case local(path: URL)
     }
 
@@ -1489,62 +2174,15 @@ private struct ThirdPartySource {
     let owner: String?
     let repo: String?
 
-    static func parse(_ raw: String, requireLocalPathExists: Bool) throws -> ThirdPartySource {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw ThirdPartyManagerError.invalidSource("Source cannot be empty")
-        }
-
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return try parseGitHub(trimmed)
-        }
-
-        return try parseLocalPath(trimmed, requireExists: requireLocalPathExists)
-    }
-
-    private static func parseGitHub(_ value: String) throws -> ThirdPartySource {
-        guard let atIndex = value.lastIndex(of: "@") else {
-            throw ThirdPartyManagerError.missingGitHubRef
-        }
-
-        let urlPart = String(value[..<atIndex])
-        let refPart = String(value[value.index(after: atIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !urlPart.isEmpty, !refPart.isEmpty else {
-            throw ThirdPartyManagerError.missingGitHubRef
-        }
-
-        guard let url = URL(string: urlPart),
-              let host = url.host?.lowercased(),
-              host == "github.com" || host == "www.github.com" else {
-            throw ThirdPartyManagerError.invalidSource("GitHub source must be a github.com URL")
-        }
-
-        let components = url.path
-            .split(separator: "/")
-            .map(String.init)
-
-        guard components.count >= 2 else {
-            throw ThirdPartyManagerError.invalidSource("GitHub URL must include owner and repository")
-        }
-
-        let owner = components[0].lowercased()
-        var repo = components[1].lowercased()
-        if repo.hasSuffix(".git") {
-            repo = String(repo.dropLast(4))
-        }
-
-        guard !owner.isEmpty, !repo.isEmpty else {
-            throw ThirdPartyManagerError.invalidSource("GitHub URL must include owner and repository")
-        }
-
-        guard let canonicalURL = URL(string: "https://github.com/\(owner)/\(repo)") else {
-            throw ThirdPartyManagerError.invalidSource("Unable to normalize GitHub URL")
-        }
-
+    static func github(
+        url: URL,
+        owner: String,
+        repo: String,
+        ref: String?
+    ) -> ThirdPartySource {
         return ThirdPartySource(
             kind: .github,
-            location: .github(url: canonicalURL, owner: owner, repo: repo, ref: refPart),
+            location: .github(url: url, owner: owner, repo: repo, ref: ref),
             identityKey: "github:\(owner)/\(repo)",
             displaySource: "https://github.com/\(owner)/\(repo)",
             framework: repo,
@@ -1554,47 +2192,41 @@ private struct ThirdPartySource {
         )
     }
 
-    private static func parseLocalPath(_ value: String, requireExists: Bool) throws -> ThirdPartySource {
-        let expanded = (value as NSString).expandingTildeInPath
-        let absolutePath: String
-        if expanded.hasPrefix("/") {
-            absolutePath = expanded
-        } else {
-            absolutePath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent(expanded)
-                .path
-        }
-        let normalized = URL(fileURLWithPath: absolutePath)
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-
-        if requireExists {
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: normalized.path, isDirectory: &isDirectory)
-            guard exists, isDirectory.boolValue else {
-                throw ThirdPartyManagerError.invalidSource("Local source must be an existing directory")
-            }
-        }
-
-        let framework = normalized.lastPathComponent
+    static func local(path: URL) -> ThirdPartySource {
+        let framework = path.lastPathComponent
             .lowercased()
             .replacingOccurrences(of: " ", with: "-")
 
         return ThirdPartySource(
             kind: .local,
-            location: .local(path: normalized),
-            identityKey: "local:\(normalized.path)",
-            displaySource: normalized.path,
+            location: .local(path: path),
+            identityKey: "local:\(path.path)",
+            displaySource: path.path,
             framework: framework.isEmpty ? "local-package" : framework,
-            localPath: normalized,
+            localPath: path,
             owner: nil,
             repo: nil
         )
     }
 
-    func reference(derivedLocalSnapshotHash snapshotHash: String) -> String {
+    func withGitReference(_ newReference: String) -> ThirdPartySource {
+        guard case let .github(url, owner, repo, _) = location else {
+            return self
+        }
+        return ThirdPartySource.github(
+            url: url,
+            owner: owner,
+            repo: repo,
+            ref: newReference
+        )
+    }
+
+    func reference(derivedLocalSnapshotHash snapshotHash: String) throws -> String {
         switch location {
         case let .github(_, _, _, ref):
+            guard let ref, !ref.isEmpty else {
+                throw ThirdPartyManagerError.noResolvableReference(displaySource)
+            }
             return ref
         case .local:
             return "snapshot-\(snapshotHash.prefix(12))"
@@ -1615,8 +2247,15 @@ private struct ThirdPartySource {
 
 enum ThirdPartyManagerError: Error, LocalizedError {
     case invalidSource(String)
-    case missingGitHubRef
-    case notInstalled(String)
+    case alreadyInstalledForAdd(String)
+    case packageNameNotFound(String)
+    case ambiguousPackageName(String, [String])
+    case selectionCancelled(String)
+    case gitHubRequestFailed(String)
+    case gitHubReferenceLookupFailed(String, String)
+    case noResolvableReference(String)
+    case notInstalledForUpdate(String)
+    case updateCancelled(String)
     case noMatchingInstall(String, [String])
     case ambiguousRemoveSelector(String, [String])
     case gitFailed(String, String)
@@ -1628,10 +2267,29 @@ enum ThirdPartyManagerError: Error, LocalizedError {
         switch self {
         case let .invalidSource(message):
             return message
-        case .missingGitHubRef:
-            return "GitHub sources must include an explicit @ref (for example: https://github.com/owner/repo@1.2.3)."
-        case let .notInstalled(identity):
-            return "No third-party source is installed for '\(identity)'."
+        case let .alreadyInstalledForAdd(source):
+            return "Third-party source '\(source)' is already installed. Run 'cupertino update \(source)' instead."
+        case let .packageNameNotFound(query):
+            return "No package named '\(query)' was found. Provide owner/repo or a GitHub URL."
+        case let .ambiguousPackageName(query, options):
+            let preview = options.joined(separator: ", ")
+            return "Package name '\(query)' is ambiguous. Matches: \(preview). Use owner/repo, GitHub URL, or run interactively."
+        case let .selectionCancelled(message):
+            return message
+        case let .gitHubRequestFailed(url):
+            return "GitHub API request failed: \(url)"
+        case let .gitHubReferenceLookupFailed(package, reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Failed to fetch references for '\(package)'."
+            }
+            return "Failed to fetch references for '\(package)': \(trimmed)"
+        case let .noResolvableReference(package):
+            return "Unable to resolve a reference for '\(package)'. Use an explicit @ref or run interactively to enter one."
+        case let .notInstalledForUpdate(identity):
+            return "No third-party source is installed for '\(identity)'. Run 'cupertino add \(identity)' or rerun update interactively to add it."
+        case let .updateCancelled(source):
+            return "Update aborted for '\(source)'."
         case let .noMatchingInstall(selector, installed):
             if installed.isEmpty {
                 return "No third-party sources are currently installed, so '\(selector)' cannot be removed."

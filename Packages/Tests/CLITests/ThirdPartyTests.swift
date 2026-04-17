@@ -6,16 +6,43 @@ import Testing
 
 @Suite("Third-Party", .serialized)
 struct ThirdPartyTests {
-    @Test("Rejects GitHub source without explicit @ref")
-    func rejectsGitHubWithoutRef() async throws {
-        let manager = ThirdPartyManager(storeURL: Self.testDirectory().appendingPathComponent("third-party"))
+    @Test("Interactive yes/no parsing is case-insensitive")
+    func yesNoParsingIsCaseInsensitive() {
+        #expect(ThirdPartyPrompting.parseYesNoResponse("y") == true)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("Y") == true)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("yes") == true)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("YeS") == true)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("n") == false)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("N") == false)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("no") == false)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("No") == false)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("  n  ") == false)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("") == nil)
+        #expect(ThirdPartyPrompting.parseYesNoResponse("maybe") == nil)
+    }
+
+    @Test("Non-interactive add without @ref fails when no release/tag can be resolved")
+    func addWithoutRefFailsWhenNoResolvableReference() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let manager = ThirdPartyManager(
+            storeURL: testDir.appendingPathComponent("third-party"),
+            gitHubRefDiscovery: ThirdPartyGitHubRefDiscovery { _, _ in
+                ThirdPartyGitHubReferenceSnapshot(
+                    stableReleases: [],
+                    tags: [],
+                    defaultBranch: "main"
+                )
+            }
+        )
 
         do {
             _ = try await manager.add(sourceInput: "https://github.com/acme/acme-routing")
-            Issue.record("Expected add() to reject GitHub source without @ref")
+            Issue.record("Expected add() to fail when no release/tag is available in non-interactive mode")
         } catch let error as ThirdPartyManagerError {
             switch error {
-            case .missingGitHubRef:
+            case .noResolvableReference:
                 return
             default:
                 Issue.record("Unexpected error: \(error.localizedDescription)")
@@ -23,7 +50,100 @@ struct ThirdPartyTests {
         }
     }
 
-    @Test("Local source add is idempotent, update is targeted, remove is precise")
+    @Test("Package-name ambiguity fails in non-interactive mode")
+    func packageNameAmbiguousNonInteractive() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let manager = ThirdPartyManager(
+            storeURL: testDir.appendingPathComponent("third-party"),
+            packageLookup: ThirdPartyPackageLookup {
+                [
+                    .init(
+                        owner: "acme",
+                        repo: "routing",
+                        url: "https://github.com/acme/routing",
+                        stars: 100,
+                        summary: "Acme routing"
+                    ),
+                    .init(
+                        owner: "example",
+                        repo: "routing",
+                        url: "https://github.com/example/routing",
+                        stars: 80,
+                        summary: "Example routing"
+                    ),
+                ]
+            }
+        )
+
+        do {
+            _ = try await manager.add(sourceInput: "routing")
+            Issue.record("Expected ambiguous package name to fail in non-interactive mode")
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case .ambiguousPackageName:
+                return
+            default:
+                Issue.record("Unexpected error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @Test("Update fails with add hint in non-interactive mode when source is not installed")
+    func updateNotInstalledFailsNonInteractive() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("source")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeLocalFixture(at: sourceDir, marker: "missing")
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+
+        do {
+            _ = try await manager.update(sourceInput: sourceDir.path)
+            Issue.record("Expected update() to fail for missing install in non-interactive mode")
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case .notInstalledForUpdate:
+                return
+            default:
+                Issue.record("Unexpected error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @Test("Interactive update can add missing source")
+    func updateOffersAddWhenMissingInteractive() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("source")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeLocalFixture(at: sourceDir, marker: "offer-add")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            prompting: ThirdPartyPrompting(
+                selectPackage: { _, _ in nil },
+                selectReference: { _, _ in nil },
+                confirmAddForMissingUpdate: { _ in true }
+            ),
+            interactionDetector: { nonInteractive in !nonInteractive }
+        )
+
+        let result = try await manager.update(
+            sourceInput: sourceDir.path,
+            buildOptions: .init(mode: .disabled, allowBuild: false, nonInteractive: false)
+        )
+
+        #expect(result.mode == .added)
+        let installs = try Self.readManifestInstalls(from: storeDir)
+        #expect(installs.count == 1)
+    }
+
+    @Test("Local source add rejects duplicates, update is targeted, remove is precise")
     func localLifecycle() async throws {
         let testDir = Self.testDirectory()
         defer { try? FileManager.default.removeItem(at: testDir) }
@@ -41,10 +161,17 @@ struct ThirdPartyTests {
         #expect(FileManager.default.fileExists(atPath: storeDir.appendingPathComponent("search.db").path))
         #expect(FileManager.default.fileExists(atPath: storeDir.appendingPathComponent("samples.db").path))
 
-        let secondAdd = try await manager.add(sourceInput: sourceDir.path)
-        #expect(secondAdd.docsIndexed == firstAdd.docsIndexed)
-        #expect(secondAdd.sampleProjectsIndexed == firstAdd.sampleProjectsIndexed)
-        #expect(secondAdd.sampleFilesIndexed == firstAdd.sampleFilesIndexed)
+        do {
+            _ = try await manager.add(sourceInput: sourceDir.path)
+            Issue.record("Expected add() to fail when source is already installed")
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case .alreadyInstalledForAdd:
+                break
+            default:
+                Issue.record("Unexpected error: \(error.localizedDescription)")
+            }
+        }
 
         let installsAfterSecondAdd = try Self.readManifestInstalls(from: storeDir)
         #expect(installsAfterSecondAdd.count == 1)
@@ -259,6 +386,92 @@ struct ThirdPartyTests {
         let removed = try await manager.remove(sourceInput: "apple/swift-nio")
 
         #expect(removed.provenance == "apple/swift-nio@2.80.0")
+        let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
+        #expect(installsAfterRemove.isEmpty)
+    }
+
+    @Test("Remove accepts package-name selector by exact repo match")
+    func removeByPackageNameExactRepo() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "src-test",
+                    identityKey: "github:pointfreeco/swift-composable-architecture",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/pointfreeco/swift-composable-architecture@1.25.5",
+                    displaySource: "https://github.com/pointfreeco/swift-composable-architecture",
+                    provenance: "pointfreeco/swift-composable-architecture@1.25.5",
+                    framework: "swift-composable-architecture",
+                    uriPrefix: "packages://third-party/src-test/",
+                    projectPrefix: "tp-src-test-",
+                    reference: "1.25.5",
+                    localPath: nil,
+                    owner: "pointfreeco",
+                    repo: "swift-composable-architecture",
+                    snapshotHash: "cafebabe",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: Date(),
+                    updatedAt: Date()
+                )
+            ]
+        )
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let removed = try await manager.remove(sourceInput: "swift-composable-architecture")
+
+        #expect(removed.provenance == "pointfreeco/swift-composable-architecture@1.25.5")
+        let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
+        #expect(installsAfterRemove.isEmpty)
+    }
+
+    @Test("Remove accepts package-name selector by fuzzy repo match when unique")
+    func removeByPackageNameFuzzyRepo() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "src-test",
+                    identityKey: "github:pointfreeco/swift-composable-architecture",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/pointfreeco/swift-composable-architecture@1.25.5",
+                    displaySource: "https://github.com/pointfreeco/swift-composable-architecture",
+                    provenance: "pointfreeco/swift-composable-architecture@1.25.5",
+                    framework: "swift-composable-architecture",
+                    uriPrefix: "packages://third-party/src-test/",
+                    projectPrefix: "tp-src-test-",
+                    reference: "1.25.5",
+                    localPath: nil,
+                    owner: "pointfreeco",
+                    repo: "swift-composable-architecture",
+                    snapshotHash: "cafebabe",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: Date(),
+                    updatedAt: Date()
+                )
+            ]
+        )
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let removed = try await manager.remove(sourceInput: "composable")
+
+        #expect(removed.provenance == "pointfreeco/swift-composable-architecture@1.25.5")
         let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
         #expect(installsAfterRemove.isEmpty)
     }
