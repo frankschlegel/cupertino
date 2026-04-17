@@ -8,7 +8,7 @@ import Logging
 struct AddCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "add",
-        abstract: "Ingest third-party Swift package documentation into overlay databases"
+        abstract: "Ingest third-party Swift package documentation into a separate package index"
     )
 
     @Argument(help: "Source: local path, GitHub URL, owner/repo, or package name (optional @ref)")

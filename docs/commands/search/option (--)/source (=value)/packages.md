@@ -34,7 +34,7 @@ Results use the `packages://` URI scheme. Third-party docs are namespaced under 
 
 Bundled package catalog data is indexed by `cupertino save`.
 
-Third-party docs are managed independently (overlay DBs):
+Third-party docs are managed independently in a separate third-party package index:
 
 ```bash
 cupertino add swift-composable-architecture
@@ -56,5 +56,5 @@ cupertino remove pointfreeco/swift-composable-architecture
 ## Notes
 
 - Third-party docs live in `~/.cupertino/third-party/` and are not overwritten by `cupertino setup`
-- `source=packages` searches core + overlay package records together
-- `read_document` can read package URIs from either core or overlay indexes
+- `source=packages` searches core + third-party package records together
+- `read_document` can read package URIs from either core or third-party package indexes

@@ -8,7 +8,7 @@ import Logging
 struct UpdateCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "update",
-        abstract: "Update an already-installed third-party source in overlay databases"
+        abstract: "Update an already-installed third-party source in the separate package index"
     )
 
     @Argument(help: "Source: local path, GitHub URL, owner/repo, or package name (optional @ref)")

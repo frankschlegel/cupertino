@@ -8,7 +8,7 @@ import Logging
 struct RemoveCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "remove",
-        abstract: "Remove a third-party source from overlay databases",
+        abstract: "Remove a third-party source from the separate package index",
         discussion: """
         SELECTORS:
           - GitHub URL (ref optional): https://github.com/owner/repo or ...@ref

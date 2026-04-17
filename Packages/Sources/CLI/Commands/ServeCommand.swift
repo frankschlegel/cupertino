@@ -102,7 +102,7 @@ struct ServeCommand: AsyncParsableCommand {
         let searchIndex: Search.Index? = await loadSearchIndex(searchDBURL: searchDBURL)
         let overlaySearchIndex: Search.Index? = await loadSearchIndex(
             searchDBURL: overlaySearchDBURL,
-            description: "third-party overlay"
+            description: "third-party index"
         )
         let primarySearchIndexForProviders = searchIndex ?? overlaySearchIndex
         let overlaySearchIndexForProviders = searchIndex == nil ? nil : overlaySearchIndex
@@ -131,11 +131,11 @@ struct ServeCommand: AsyncParsableCommand {
             let message = "✅ Documentation search enabled (index found)"
             Log.info(message, category: .mcp)
         } else if overlaySearchIndex != nil {
-            let message = "✅ Documentation search enabled from third-party overlay index"
+            let message = "✅ Documentation search enabled from third-party package index"
             Log.info(message, category: .mcp)
         }
         if overlaySearchIndex != nil {
-            let message = "✅ Third-party overlay search enabled (index found)"
+            let message = "✅ Third-party package search enabled (separate index found)"
             Log.info(message, category: .mcp)
         }
         if sampleIndex != nil {
@@ -173,9 +173,9 @@ struct ServeCommand: AsyncParsableCommand {
         guard FileManager.default.fileExists(atPath: searchDBURL.path) else {
             let infoMsg = "ℹ️  \(description.capitalized) search index not found at: \(searchDBURL.path)"
             let hintMsg: String
-            if description == "third-party overlay" {
+            if description == "third-party index" {
                 let cmd = "\(Shared.Constants.App.commandName) add <source>"
-                hintMsg = "   Overlay results will be skipped. Run '\(cmd)' to add third-party docs."
+                hintMsg = "   Third-party package results will be skipped. Run '\(cmd)' to add third-party docs."
             } else {
                 let cmd = "\(Shared.Constants.App.commandName) save"
                 hintMsg = "   Tools will not be available. Run '\(cmd)' to enable search."
@@ -190,8 +190,8 @@ struct ServeCommand: AsyncParsableCommand {
         } catch {
             let errorMsg = "⚠️  Failed to load \(description) search index: \(error)"
             let hintMsg: String
-            if description == "third-party overlay" {
-                hintMsg = "   Overlay results will be skipped until the index is fixed."
+            if description == "third-party index" {
+                hintMsg = "   Third-party package results will be skipped until the index is fixed."
             } else {
                 let cmd = "\(Shared.Constants.App.commandName) save"
                 hintMsg = "   Tools will not be available. Run '\(cmd)' to create the index."
@@ -214,7 +214,7 @@ struct ServeCommand: AsyncParsableCommand {
             messages.append("   Search DB: \(searchDBURL.path)")
         }
         if FileManager.default.fileExists(atPath: overlaySearchDBURL.path) {
-            messages.append("   Overlay Search DB: \(overlaySearchDBURL.path)")
+            messages.append("   Third-party Search DB: \(overlaySearchDBURL.path)")
         }
 
         // Add samples DB path if it exists

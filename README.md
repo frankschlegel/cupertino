@@ -109,6 +109,45 @@ cupertino                            # Start MCP server (default command)
 cupertino serve                      # Start MCP server (explicit)
 ```
 
+### Third-Party Package Docs (Separate Index)
+
+Use the separate third-party package index when you want package API docs/README content searchable alongside built-in sources.
+
+```bash
+# Add docs for a package (name, owner/repo, or GitHub URL)
+cupertino add swift-composable-architecture
+cupertino add pointfreeco/swift-composable-architecture
+cupertino add https://github.com/pointfreeco/swift-composable-architecture
+
+# Pin an explicit git ref (tag/branch/SHA)
+cupertino add pointfreeco/swift-composable-architecture@1.25.5
+
+# Update an installed source
+cupertino update swift-composable-architecture
+
+# Remove an installed source
+cupertino remove swift-composable-architecture
+
+# Search package docs only
+cupertino search "Reducer" --source packages
+```
+
+`add`/`update` source formats:
+- Local directory path
+- GitHub URL
+- `owner/repo`
+- Package name (`repo`), with optional `@ref`
+
+Resolution behavior:
+- If `@ref` is omitted, interactive mode prompts for ref selection.
+- In non-interactive mode, latest stable release is used, then latest tag.
+- Ambiguous package names prompt in interactive mode; non-interactive mode fails with suggestions.
+- `update` offers to add missing sources in interactive mode; non-interactive mode fails with an `add` hint.
+
+Build behavior:
+- DocC generation may run package build/plugins.
+- Use `--allow-build` to skip confirmation in automation/non-interactive flows.
+
 ### Instant Setup (Recommended)
 
 ```bash
@@ -465,7 +504,7 @@ Cupertino includes pre-indexed catalog data bundled directly into the applicatio
   - Apple official packages (31) + essential ecosystem packages (5)
   - High-priority Swift packages for quick access
 
-These catalogs are indexed during `cupertino save` and enable instant search without requiring multi-hour downloads. Third-party package docs are managed separately in overlay databases via `cupertino add`, `cupertino update`, and `cupertino remove`.
+These catalogs are indexed during `cupertino save` and enable instant search without requiring multi-hour downloads. Third-party package docs are managed in a separate index via `cupertino add`, `cupertino update`, and `cupertino remove`.
 
 ### 3. Full-Text Search Engine
 
@@ -519,6 +558,9 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
 | `cupertino save` | Build search index |
 | `cupertino search` | Search documentation from CLI |
 | `cupertino read` | Read full document by URI |
+| `cupertino add` | Add third-party package docs to the separate package index |
+| `cupertino update` | Update an installed third-party package source |
+| `cupertino remove` | Remove an installed third-party package source |
 | `cupertino doctor` | Check server health |
 | `cupertino index` | Index sample code for search |
 | `cupertino cleanup` | Clean up sample code archives |

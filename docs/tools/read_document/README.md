@@ -18,7 +18,7 @@ Read a document by URI in JSON or Markdown format.
 
 Retrieves the full content of a document from the search index. Use URIs from `search` results. Documents can be returned in JSON (structured) or Markdown (rendered) format.
 
-`packages://` URIs are resolved transparently across both the core index and third-party overlay indexes.
+`packages://` URIs are resolved transparently across both the core index and the separate third-party package index.
 
 ## Parameters
 
