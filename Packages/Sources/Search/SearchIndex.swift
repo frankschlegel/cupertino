@@ -336,6 +336,7 @@ extension Search {
             CREATE INDEX IF NOT EXISTS idx_min_tvos ON docs_metadata(min_tvos);
             CREATE INDEX IF NOT EXISTS idx_min_watchos ON docs_metadata(min_watchos);
             CREATE INDEX IF NOT EXISTS idx_min_visionos ON docs_metadata(min_visionos);
+            CREATE INDEX IF NOT EXISTS idx_docs_fts_content_uri ON docs_fts_content(c0);
 
             -- Structured documentation fields (extracted from JSON for querying)
             CREATE TABLE IF NOT EXISTS docs_structured (
@@ -3789,6 +3790,11 @@ extension Search {
             case markdown // Return rendered markdown from rawMarkdown
         }
 
+        private struct MetadataLookupResult {
+            let resolvedURI: String
+            let jsonData: String?
+        }
+
         /// Get document content by URI from database
         /// - Parameters:
         ///   - uri: The document URI
@@ -3802,38 +3808,21 @@ extension Search {
                 throw SearchError.databaseNotInitialized
             }
 
-            // Get json_data from metadata table
-            let sql = """
-            SELECT json_data
-            FROM docs_metadata
-            WHERE uri = ?
-            LIMIT 1;
-            """
-
-            var statement: OpaquePointer?
-            defer { sqlite3_finalize(statement) }
-
-            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-                let errorMessage = String(cString: sqlite3_errmsg(database))
-                throw SearchError.searchFailed("Get content failed: \(errorMessage)")
-            }
-
-            sqlite3_bind_text(statement, 1, (uri as NSString).utf8String, -1, nil)
-
-            guard sqlite3_step(statement) == SQLITE_ROW else {
-                // Not found in metadata, try FTS content as fallback
+            guard let metadata = try lookupMetadataWithAliases(forURI: uri, database: database) else {
+                // Not found in metadata, try content-table fallback as last resort.
                 return try await getContentFromFTS(uri: uri, format: format)
             }
 
-            guard let jsonPtr = sqlite3_column_text(statement, 0) else {
-                return try await getContentFromFTS(uri: uri, format: format)
+            guard let jsonString = metadata.jsonData else {
+                return try await getContentFromFTS(uri: metadata.resolvedURI, format: format)
             }
-
-            let jsonString = String(cString: jsonPtr)
 
             switch format {
             case .json:
-                // Return full structured JSON
+                // Return full structured JSON, but backfill rawMarkdown from FTS for legacy rows.
+                if let merged = try await mergeRawMarkdownIntoJSONIfMissing(uri: metadata.resolvedURI, jsonString: jsonString) {
+                    return merged
+                }
                 return jsonString
 
             case .markdown:
@@ -3854,8 +3843,246 @@ extension Search {
                     }
                 }
 
-                // 3. Fall back to FTS content table
-                return try await getContentFromFTS(uri: uri, format: format)
+                // 3. Try generic JSON extraction for non-StructuredDocumentationPage payloads
+                if let rawMarkdown = extractRawMarkdownFromGenericJSON(jsonString),
+                   !rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return rawMarkdown
+                }
+
+                // 4. Fall back to FTS content table
+                return try await getContentFromFTS(uri: metadata.resolvedURI, format: format)
+            }
+        }
+
+        private func lookupMetadataWithAliases(
+            forURI uri: String,
+            database: OpaquePointer
+        ) throws -> MetadataLookupResult? {
+            var candidates: [String] = [uri]
+
+            if let legacyNormalized = normalizeLegacyDocCArchiveURI(uri), legacyNormalized != uri {
+                candidates.append(legacyNormalized)
+            }
+
+            if let canonical = try resolveDocCDataURICandidate(uri: uri, database: database),
+               !candidates.contains(canonical) {
+                candidates.append(canonical)
+            }
+
+            if let last = candidates.last,
+               let canonical = try resolveDocCDataURICandidate(uri: last, database: database),
+               !candidates.contains(canonical) {
+                candidates.append(canonical)
+            }
+
+            for candidate in candidates {
+                if let lookup = try lookupMetadata(forURI: candidate, database: database) {
+                    return lookup
+                }
+            }
+
+            return nil
+        }
+
+        private func lookupMetadata(
+            forURI uri: String,
+            database: OpaquePointer
+        ) throws -> MetadataLookupResult? {
+            let sql = """
+            SELECT uri, json_data
+            FROM docs_metadata
+            WHERE uri = ?
+            LIMIT 1;
+            """
+
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SearchError.searchFailed("Get content failed: \(errorMessage)")
+            }
+
+            sqlite3_bind_text(statement, 1, (uri as NSString).utf8String, -1, nil)
+
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                return nil
+            }
+
+            guard let resolvedURIPtr = sqlite3_column_text(statement, 0) else {
+                return nil
+            }
+            let resolvedURI = String(cString: resolvedURIPtr)
+
+            let jsonData: String? = if sqlite3_column_type(statement, 1) != SQLITE_NULL,
+                                       let jsonPtr = sqlite3_column_text(statement, 1) {
+                String(cString: jsonPtr)
+            } else {
+                nil
+            }
+
+            return MetadataLookupResult(resolvedURI: resolvedURI, jsonData: jsonData)
+        }
+
+        private func normalizeLegacyDocCArchiveURI(_ uri: String) -> String? {
+            guard uri.hasPrefix("packages://"), uri.contains("/docc/"), uri.contains(".doccarchive/"),
+                  let archiveRange = uri.range(of: ".doccarchive/"),
+                  let doccRange = uri.range(of: "/docc/"),
+                  archiveRange.lowerBound > doccRange.upperBound else {
+                return nil
+            }
+
+            let prefix = String(uri[..<doccRange.upperBound])
+            let archiveName = String(uri[doccRange.upperBound..<archiveRange.lowerBound])
+            let suffix = String(uri[archiveRange.upperBound...])
+            guard !archiveName.isEmpty, !suffix.isEmpty else {
+                return nil
+            }
+
+            return "\(prefix)\(archiveName)/data/\(suffix)"
+        }
+
+        private func resolveDocCDataURICandidate(
+            uri: String,
+            database: OpaquePointer
+        ) throws -> String? {
+            guard uri.hasPrefix("packages://"),
+                  let doccRange = uri.range(of: "/docc/"),
+                  let dataRange = uri.range(of: "/data/", range: doccRange.upperBound..<uri.endIndex) else {
+                return nil
+            }
+
+            let prefix = String(uri[..<doccRange.upperBound])
+            let suffix = String(uri[dataRange.upperBound...])
+            guard !suffix.isEmpty else {
+                return nil
+            }
+
+            let likePrefix = escapeLikePattern(prefix)
+            let likeSuffix = escapeLikePattern(suffix)
+            let pattern = "\(likePrefix)%/data/\(likeSuffix)"
+
+            let sql = """
+            SELECT uri
+            FROM docs_metadata
+            WHERE uri LIKE ? ESCAPE '\\'
+            LIMIT 1;
+            """
+
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                let errorMessage = String(cString: sqlite3_errmsg(database))
+                throw SearchError.searchFailed("URI alias lookup failed: \(errorMessage)")
+            }
+
+            sqlite3_bind_text(statement, 1, (pattern as NSString).utf8String, -1, nil)
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  let uriPtr = sqlite3_column_text(statement, 0) else {
+                return nil
+            }
+            return String(cString: uriPtr)
+        }
+
+        private func escapeLikePattern(_ value: String) -> String {
+            value
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_")
+        }
+
+        private func mergeRawMarkdownIntoJSONIfMissing(uri: String, jsonString: String) async throws -> String? {
+            guard let jsonData = jsonString.data(using: .utf8),
+                  var object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                return nil
+            }
+
+            let existingRaw = object["rawMarkdown"] as? String
+            if let existingRaw, !existingRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return nil
+            }
+
+            var recoveredMarkdown = recoverRawMarkdownFromJSON(jsonString)
+            if recoveredMarkdown == nil {
+                recoveredMarkdown = try await getContentFromFTS(uri: uri, format: .markdown)
+            }
+
+            guard let recoveredMarkdown,
+                  !recoveredMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+
+            object["rawMarkdown"] = recoveredMarkdown
+            if object["uri"] == nil {
+                object["uri"] = uri
+            }
+
+            guard let mergedData = try? JSONSerialization.data(withJSONObject: object, options: []),
+                  let merged = String(data: mergedData, encoding: .utf8) else {
+                return nil
+            }
+            return merged
+        }
+
+        private func recoverRawMarkdownFromJSON(_ jsonString: String) -> String? {
+            if let genericRaw = extractRawMarkdownFromGenericJSON(jsonString),
+               !genericRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return genericRaw
+            }
+
+            let jsonData = Data(jsonString.utf8)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            if let page = try? decoder.decode(StructuredDocumentationPage.self, from: jsonData) {
+                if let rawMarkdown = page.rawMarkdown, !rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return rawMarkdown
+                }
+                let generated = page.markdown
+                if !generated.isEmpty, generated != "# \(page.title)\n\n" {
+                    return generated
+                }
+            }
+            return nil
+        }
+
+        private func extractRawMarkdownFromGenericJSON(_ jsonString: String) -> String? {
+            guard let data = jsonString.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) else {
+                return nil
+            }
+            return findRawMarkdown(in: object)
+        }
+
+        private func findRawMarkdown(in value: Any) -> String? {
+            switch value {
+            case let dictionary as [String: Any]:
+                for (key, nestedValue) in dictionary where key.lowercased() == "rawmarkdown" {
+                    if let raw = nestedValue as? String {
+                        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            return raw
+                        }
+                    }
+                }
+
+                for nestedValue in dictionary.values {
+                    if let found = findRawMarkdown(in: nestedValue) {
+                        return found
+                    }
+                }
+                return nil
+
+            case let array as [Any]:
+                for nestedValue in array {
+                    if let found = findRawMarkdown(in: nestedValue) {
+                        return found
+                    }
+                }
+                return nil
+
+            default:
+                return nil
             }
         }
 
@@ -3866,9 +4093,9 @@ extension Search {
             }
 
             let ftsSql = """
-            SELECT content
-            FROM docs_fts
-            WHERE uri = ?
+            SELECT c5
+            FROM docs_fts_content
+            WHERE c0 = ?
             LIMIT 1;
             """
 

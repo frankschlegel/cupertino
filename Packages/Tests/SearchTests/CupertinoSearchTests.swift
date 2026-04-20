@@ -582,3 +582,143 @@ func getDocumentContentFTSFallbackJSON() async throws {
 
     await index.disconnect()
 }
+
+@Test("getDocumentContent markdown prefers generic rawMarkdown over FTS fallback")
+func getDocumentContentMarkdownUsesGenericRawMarkdown() async throws {
+    let tempDB = FileManager.default.temporaryDirectory.appendingPathComponent("test-\(UUID().uuidString).db")
+    defer { try? FileManager.default.removeItem(at: tempDB) }
+
+    let index = try await Search.Index(dbPath: tempDB)
+
+    let uri = "packages://third-party/src-1/docs/guide"
+    let structuredMarkdown = "# Guide\n\n## Topics\n\n- **Reducer**: ComposableArchitecture reducer."
+    let ftsContent = "flattened fallback text"
+
+    try await index.indexDocument(
+        uri: uri,
+        source: "packages",
+        framework: "swift-composable-architecture",
+        title: "Guide",
+        content: ftsContent,
+        filePath: "/test/guide.json",
+        contentHash: "test-hash",
+        lastCrawled: Date(),
+        sourceType: "packages",
+        jsonData: "{\"title\":\"Guide\",\"url\":\"\(uri)\",\"rawMarkdown\":\"\(structuredMarkdown.replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n"))\"}"
+    )
+
+    let content = try await index.getDocumentContent(uri: uri, format: .markdown)
+
+    #expect(content == structuredMarkdown)
+    #expect(content?.contains("## Topics") == true)
+    #expect(content?.contains("flattened fallback text") == false)
+
+    await index.disconnect()
+}
+
+@Test("getDocumentContent JSON merges FTS content into rawMarkdown when missing")
+func getDocumentContentJSONMergesRawMarkdownFromFTS() async throws {
+    let tempDB = FileManager.default.temporaryDirectory.appendingPathComponent("test-\(UUID().uuidString).db")
+    defer { try? FileManager.default.removeItem(at: tempDB) }
+
+    let index = try await Search.Index(dbPath: tempDB)
+
+    let uri = "packages://third-party/src-1/docs/legacy"
+    let ftsContent = "# Legacy Guide\n\nRecovered markdown from FTS."
+
+    try await index.indexDocument(
+        uri: uri,
+        source: "packages",
+        framework: "legacy-framework",
+        title: "Legacy Guide",
+        content: ftsContent,
+        filePath: "/test/legacy.json",
+        contentHash: "legacy-hash",
+        lastCrawled: Date(),
+        sourceType: "packages",
+        jsonData: "{\"title\":\"Legacy Guide\",\"url\":\"\(uri)\",\"rawMarkdown\":null}"
+    )
+
+    let content = try await index.getDocumentContent(uri: uri, format: .json)
+
+    #expect(content != nil)
+    #expect(content?.contains("\"rawMarkdown\"") == true)
+    #expect(content?.contains("Recovered markdown from FTS.") == true)
+
+    await index.disconnect()
+}
+
+@Test("getDocumentContent JSON merge prefers recoverable markdown from JSON payload over FTS")
+func getDocumentContentJSONMergePrefersRecoveredMarkdown() async throws {
+    let tempDB = FileManager.default.temporaryDirectory.appendingPathComponent("test-\(UUID().uuidString).db")
+    defer { try? FileManager.default.removeItem(at: tempDB) }
+
+    let index = try await Search.Index(dbPath: tempDB)
+
+    let uri = "packages://third-party/src-1/docs/legacy-with-nested-markdown"
+    let ftsContent = "flat fts fallback content"
+    let nestedMarkdown = "# Legacy Guide\n\nRecovered from nested JSON payload."
+    let escapedNestedMarkdown = nestedMarkdown
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+
+    try await index.indexDocument(
+        uri: uri,
+        source: "packages",
+        framework: "legacy-framework",
+        title: "Legacy Guide",
+        content: ftsContent,
+        filePath: "/test/legacy.json",
+        contentHash: "legacy-hash-nested",
+        lastCrawled: Date(),
+        sourceType: "packages",
+        jsonData: "{\"title\":\"Legacy Guide\",\"url\":\"\(uri)\",\"rawMarkdown\":null,\"docc\":{\"rawMarkdown\":\"\(escapedNestedMarkdown)\"}}"
+    )
+
+    let content = try await index.getDocumentContent(uri: uri, format: .json)
+
+    #expect(content != nil)
+    #expect(content?.contains("\"rawMarkdown\"") == true)
+    #expect(content?.contains("Recovered from nested JSON payload.") == true)
+    #expect(content?.contains("flat fts fallback content") == false)
+
+    await index.disconnect()
+}
+
+@Test("getDocumentContent resolves legacy .doccarchive package URIs to canonical data URIs")
+func getDocumentContentResolvesLegacyDocCArchiveURI() async throws {
+    let tempDB = FileManager.default.temporaryDirectory.appendingPathComponent("test-\(UUID().uuidString).db")
+    defer { try? FileManager.default.removeItem(at: tempDB) }
+
+    let index = try await Search.Index(dbPath: tempDB)
+
+    let canonicalURI = "packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/gettingstarted"
+    let legacyURI = "packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/composablearchitecture.doccarchive/documentation/composablearchitecture/gettingstarted"
+    let markdown = "# Getting started\n\nCanonical content."
+    let escapedMarkdown = markdown
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    let jsonData = "{\"title\":\"Getting started\",\"url\":\"\(canonicalURI)\",\"rawMarkdown\":\"\(escapedMarkdown)\"}"
+
+    try await index.indexDocument(
+        uri: canonicalURI,
+        source: "packages",
+        framework: "swift-composable-architecture",
+        title: "Getting started",
+        content: "canonical content for search lane",
+        filePath: "/test/gettingstarted.json",
+        contentHash: "legacy-alias-hash",
+        lastCrawled: Date(),
+        sourceType: "packages",
+        jsonData: jsonData
+    )
+
+    let markdownContent = try await index.getDocumentContent(uri: legacyURI, format: .markdown)
+    #expect(markdownContent == markdown)
+
+    let jsonContent = try await index.getDocumentContent(uri: legacyURI, format: .json)
+    #expect(jsonContent?.contains("\"rawMarkdown\"") == true)
+    #expect(jsonContent?.contains("Canonical content.") == true)
+
+    await index.disconnect()
+}
