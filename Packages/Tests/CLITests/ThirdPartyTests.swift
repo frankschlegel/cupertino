@@ -457,6 +457,165 @@ struct ThirdPartyTests {
         #expect(installs[0].build?.doccDocsIndexed == result.doccDocsIndexed)
     }
 
+    @Test("Plugin-unavailable DocC path falls back to xcodebuild docbuild")
+    func pluginUnavailableFallsBackToXcodebuild() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "plugin-fallback")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            commandExecutor: { executable, arguments, _ in
+                if executable == "/usr/bin/swift", arguments == ["package", "dump-package"] {
+                    return Self.dumpPackageJSON(name: "FixtureLib", libraryProducts: ["FixtureLib"])
+                }
+                if executable == "/usr/bin/swift", arguments == ["package", "plugin", "--list"] {
+                    return "No command plugins"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments == ["-list"] {
+                    return "Information about package \"FixtureLib\":\n    Schemes:\n        FixtureLib-Package\n"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments.contains("docbuild"),
+                   let derivedDataPath = Self.argumentValue(after: "-derivedDataPath", in: arguments) {
+                    try Self.makeDocCArchive(
+                        inDerivedDataPath: derivedDataPath,
+                        archiveName: "FixtureLib"
+                    )
+                    return "** BUILD SUCCEEDED **"
+                }
+                throw ThirdPartyManagerError.commandFailed(
+                    ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                    "Unexpected command in test"
+                )
+            }
+        )
+
+        let result = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+
+        #expect(result.doccStatus == .succeeded)
+        #expect(result.doccMethod == .xcodebuild)
+        #expect(result.doccDocsIndexed > 0)
+        #expect(result.doccDiagnostics.contains(where: { $0.contains("[plugin]") }))
+    }
+
+    @Test(".docc source catalogs are ingested when build outputs are unavailable")
+    func doccSourceCatalogIngestion() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("docc-source-fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeLocalFixture(at: sourceDir, marker: "docc-source")
+        try Self.makeDocCSourceCatalogFixture(at: sourceDir, marker: "docc-source")
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let result = try await manager.add(sourceInput: sourceDir.path)
+
+        #expect(result.doccStatus == .succeeded)
+        #expect(result.doccMethod == .doccSource)
+        #expect(result.doccDocsIndexed >= 2)
+        #expect(result.docsIndexed >= 4)
+
+        let installs = try Self.readManifestFullInstalls(from: storeDir)
+        #expect(installs.count == 1)
+        #expect(installs[0].build?.method == .doccSource)
+    }
+
+    @Test("xcodebuild fallback failures degrade and preserve markdown fallback ingestion")
+    func xcodebuildFallbackFailureDegradesGracefully() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "xcodebuild-fail")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            commandExecutor: { executable, arguments, _ in
+                if executable == "/usr/bin/swift", arguments == ["package", "dump-package"] {
+                    return Self.dumpPackageJSON(name: "FixtureLib", libraryProducts: ["FixtureLib"])
+                }
+                if executable == "/usr/bin/swift", arguments == ["package", "plugin", "--list"] {
+                    return "No command plugins"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments == ["-list"] {
+                    return "Information about package \"FixtureLib\":\n    Schemes:\n        FixtureLib-Package\n"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments.contains("docbuild") {
+                    throw ThirdPartyManagerError.commandFailed("xcodebuild docbuild", "Compile failed in test fixture")
+                }
+                throw ThirdPartyManagerError.commandFailed(
+                    ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                    "Unexpected command in test"
+                )
+            }
+        )
+
+        let result = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+
+        #expect(result.doccStatus == .degraded)
+        #expect(result.doccMethod == .none)
+        #expect(result.doccDocsIndexed == 0)
+        #expect(result.docsIndexed >= 2)
+        #expect(result.doccDiagnostics.contains(where: { $0.contains("[xcodebuild]") }))
+    }
+
+    @Test("xcodebuild archive matching normalizes underscore-prefixed archive names")
+    func xcodebuildArchiveNameNormalization() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "underscore")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            commandExecutor: { executable, arguments, _ in
+                if executable == "/usr/bin/swift", arguments == ["package", "dump-package"] {
+                    return Self.dumpPackageJSON(name: "FixtureLib", libraryProducts: ["FixtureLib"])
+                }
+                if executable == "/usr/bin/swift", arguments == ["package", "plugin", "--list"] {
+                    return "No command plugins"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments == ["-list"] {
+                    return "Information about package \"FixtureLib\":\n    Schemes:\n        FixtureLib\n"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments.contains("docbuild"),
+                   let derivedDataPath = Self.argumentValue(after: "-derivedDataPath", in: arguments) {
+                    try Self.makeDocCArchive(
+                        inDerivedDataPath: derivedDataPath,
+                        archiveName: "_fixturelib"
+                    )
+                    return "** BUILD SUCCEEDED **"
+                }
+                throw ThirdPartyManagerError.commandFailed(
+                    ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                    "Unexpected command in test"
+                )
+            }
+        )
+
+        let result = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+
+        #expect(result.doccStatus == .succeeded)
+        #expect(result.doccMethod == .xcodebuild)
+        #expect(result.doccDocsIndexed > 0)
+    }
+
     @Test("Remove works for local source even if source directory no longer exists")
     func removeWithoutExistingLocalPath() async throws {
         let testDir = Self.testDirectory()
@@ -656,6 +815,9 @@ private extension ThirdPartyTests {
         struct BuildRecord: Codable {
             let status: ThirdPartyDocCStatus
             let attempted: Bool
+            let method: ThirdPartyDocCMethod?
+            let archivesDiscovered: Int?
+            let schemesAttempted: [String]?
             let libraryProducts: [String]
             let diagnostics: [String]
             let doccDocsIndexed: Int
@@ -811,6 +973,91 @@ private extension ThirdPartyTests {
             .write(to: sourceDir.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         try "# Guide \(marker)\n\nsource-tracking-guide-\(marker)\n"
             .write(to: sourceDir.appendingPathComponent("docs/guide.md"), atomically: true, encoding: .utf8)
+    }
+
+    static func makeDocCSourceCatalogFixture(at sourceDir: URL, marker: String) throws {
+        let fileManager = FileManager.default
+        let doccDir = sourceDir.appendingPathComponent("Documentation.docc")
+        try fileManager.createDirectory(at: doccDir, withIntermediateDirectories: true)
+
+        try """
+        # Overview \(marker)
+
+        This is DocC markdown content for \(marker).
+        """
+        .write(to: doccDir.appendingPathComponent("Overview.md"), atomically: true, encoding: .utf8)
+
+        try """
+        # Tutorial \(marker)
+
+        ## Step 1
+        Learn the \(marker) workflow.
+        """
+        .write(to: doccDir.appendingPathComponent("Tutorial.tutorial"), atomically: true, encoding: .utf8)
+    }
+
+    static func dumpPackageJSON(name: String, libraryProducts: [String]) -> String {
+        let products: [[String: Any]] = libraryProducts.map { product in
+            [
+                "name": product,
+                "type": [
+                    "library": ["automatic": true]
+                ]
+            ]
+        }
+        let payload: [String: Any] = [
+            "name": name,
+            "products": products
+        ]
+
+        let data = try! JSONSerialization.data(withJSONObject: payload, options: [])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    static func argumentValue(after flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag),
+              arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+
+    static func makeDocCArchive(
+        inDerivedDataPath derivedDataPath: String,
+        archiveName: String
+    ) throws {
+        let archiveRoot = URL(fileURLWithPath: derivedDataPath)
+            .appendingPathComponent("Build/Products/Debug/\(archiveName).doccarchive")
+        let docsDir = archiveRoot.appendingPathComponent("data/documentation")
+        try FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
+
+        let payload: [String: Any] = [
+            "title": archiveName,
+            "abstract": [
+                [
+                    "type": "text",
+                    "text": "Generated DocC fallback content"
+                ]
+            ],
+            "primaryContentSections": [
+                [
+                    "kind": "content",
+                    "content": [
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                [
+                                    "type": "text",
+                                    "text": "xcodebuild docbuild output was indexed."
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        try data.write(to: docsDir.appendingPathComponent("overview.json"), options: .atomic)
     }
 
     static func readManifestInstalls(from storeDir: URL) throws -> [ManifestFile.Install] {
