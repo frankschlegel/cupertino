@@ -13,17 +13,20 @@ public actor DocsResourceProvider: ResourceProvider {
     private let evolutionDirectory: URL
     private let archiveDirectory: URL
     private let searchIndex: Search.Index?
+    private let overlaySearchIndex: Search.Index?
 
     public init(
         configuration: Shared.Configuration,
         evolutionDirectory: URL? = nil,
         archiveDirectory: URL? = nil,
-        searchIndex: Search.Index? = nil
+        searchIndex: Search.Index? = nil,
+        overlaySearchIndex: Search.Index? = nil
     ) {
         self.configuration = configuration
         self.evolutionDirectory = evolutionDirectory ?? Shared.Constants.defaultSwiftEvolutionDirectory
         self.archiveDirectory = archiveDirectory ?? Shared.Constants.defaultArchiveDirectory
         self.searchIndex = searchIndex
+        self.overlaySearchIndex = overlaySearchIndex
         // Metadata will be loaded lazily on first access
     }
 
@@ -94,10 +97,23 @@ public actor DocsResourceProvider: ResourceProvider {
     public func readResource(uri: String) async throws -> ReadResourceResult {
         let markdown: String
 
-        // Try database first if search index is available
+        // Try primary database first, then overlay database.
         if let searchIndex {
             if let dbContent = try await searchIndex.getDocumentContent(uri: uri, format: .markdown) {
                 // Found in database - return markdown
+                let contents = ResourceContents.text(
+                    TextResourceContents(
+                        uri: uri,
+                        mimeType: Shared.Constants.Search.mimeTypeMarkdown,
+                        text: dbContent
+                    )
+                )
+                return ReadResourceResult(contents: [contents])
+            }
+        }
+        if let overlaySearchIndex {
+            if let dbContent = try await overlaySearchIndex.getDocumentContent(uri: uri, format: .markdown) {
+                // Found in overlay database - return markdown
                 let contents = ResourceContents.text(
                     TextResourceContents(
                         uri: uri,

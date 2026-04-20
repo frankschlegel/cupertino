@@ -104,14 +104,13 @@ struct ServeCommand: AsyncParsableCommand {
             searchDBURL: overlaySearchDBURL,
             description: "third-party index"
         )
-        let primarySearchIndexForProviders = searchIndex ?? overlaySearchIndex
-        let overlaySearchIndexForProviders = searchIndex == nil ? nil : overlaySearchIndex
 
         // Register resource provider with optional search index
         let resourceProvider = DocsResourceProvider(
             configuration: config,
             evolutionDirectory: evolutionURL,
-            searchIndex: primarySearchIndexForProviders
+            searchIndex: searchIndex,
+            overlaySearchIndex: overlaySearchIndex
         )
         await server.registerResourceProvider(resourceProvider)
 
@@ -120,8 +119,8 @@ struct ServeCommand: AsyncParsableCommand {
 
         // Register composite tool provider with both indexes
         let toolProvider = CompositeToolProvider(
-            searchIndex: primarySearchIndexForProviders,
-            overlaySearchIndex: overlaySearchIndexForProviders,
+            searchIndex: searchIndex,
+            overlaySearchIndex: overlaySearchIndex,
             sampleDatabase: sampleIndex
         )
         await server.registerToolProvider(toolProvider)

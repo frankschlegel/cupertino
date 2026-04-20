@@ -24,13 +24,16 @@ public actor CompositeToolProvider: ToolProvider {
         overlaySearchIndex: Search.Index? = nil,
         sampleDatabase: SampleIndex.Database?
     ) {
-        self.searchIndex = searchIndex
-        self.overlaySearchIndex = overlaySearchIndex
+        let effectivePrimary = searchIndex ?? overlaySearchIndex
+        let effectiveOverlay = searchIndex == nil ? nil : overlaySearchIndex
+
+        self.searchIndex = effectivePrimary
+        self.overlaySearchIndex = effectiveOverlay
         self.sampleDatabase = sampleDatabase
 
         // Wrap databases with services for search operations
-        if let searchIndex {
-            docsService = DocsSearchService(index: searchIndex, overlayIndex: overlaySearchIndex)
+        if let effectivePrimary {
+            docsService = DocsSearchService(index: effectivePrimary, overlayIndex: effectiveOverlay)
         } else {
             docsService = nil
         }
@@ -178,7 +181,7 @@ public actor CompositeToolProvider: ToolProvider {
         ]
 
         // Unified search tool
-        if searchIndex != nil || sampleDatabase != nil {
+        if docsService != nil || sampleDatabase != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolSearch,
                 description: Shared.Constants.Search.toolSearchDescription,
@@ -190,7 +193,7 @@ public actor CompositeToolProvider: ToolProvider {
         }
 
         // List frameworks tool
-        if searchIndex != nil {
+        if docsService != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolListFrameworks,
                 description: Shared.Constants.Search.toolListFrameworksDescription,
@@ -238,7 +241,7 @@ public actor CompositeToolProvider: ToolProvider {
         }
 
         // Semantic search tools (#81)
-        if searchIndex != nil {
+        if docsService != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolSearchSymbols,
                 description: Shared.Constants.Search.toolSearchSymbolsDescription,
