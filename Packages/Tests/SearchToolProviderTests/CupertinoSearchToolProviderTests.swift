@@ -1134,6 +1134,109 @@ struct ThirdPartyOverlayIntegrationTests {
         await coreIndex.disconnect()
         await overlayIndex.disconnect()
     }
+
+    @Test("read_document returns structured markdown for package docs when rawMarkdown exists")
+    func readDocumentUsesRawMarkdownForPackages() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        let uri = "packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/gettingstarted"
+        let structuredMarkdown = """
+        # Meet the Composable Architecture
+
+        ## Topics
+
+        - [BindingState](packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/bindingstate)
+        - **Reducer**: Handle actions.
+        """
+        let escapedMarkdown = structuredMarkdown
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let jsonData = "{\"title\":\"Meet the Composable Architecture\",\"url\":\"\(uri)\",\"rawMarkdown\":\"\(escapedMarkdown)\",\"source\":\"packages\",\"framework\":\"swift-composable-architecture\"}"
+
+        try await index.indexDocument(
+            uri: uri,
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "swift-composable-architecture",
+            title: "Meet the Composable Architecture",
+            content: "flattened fallback text from FTS lane",
+            filePath: "/test/gettingstarted.json",
+            contentHash: "getting-started-hash",
+            lastCrawled: Date(),
+            sourceType: "packages",
+            jsonData: jsonData
+        )
+
+        let provider = CompositeToolProvider(searchIndex: index, sampleDatabase: nil)
+
+        let markdownArgs: [String: AnyCodable] = [
+            "uri": AnyCodable(uri),
+            "format": AnyCodable("markdown"),
+        ]
+        let markdownResult = try await provider.callTool(name: "read_document", arguments: markdownArgs)
+        if case let .text(textContent) = markdownResult.content.first {
+            #expect(textContent.text.contains("# Meet the Composable Architecture"))
+            #expect(textContent.text.contains("## Topics"))
+            #expect(textContent.text.contains("packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/bindingstate"))
+            #expect(!textContent.text.contains("flattened fallback text"))
+        }
+
+        let jsonArgs: [String: AnyCodable] = [
+            "uri": AnyCodable(uri),
+            "format": AnyCodable("json"),
+        ]
+        let jsonResult = try await provider.callTool(name: "read_document", arguments: jsonArgs)
+        if case let .text(textContent) = jsonResult.content.first {
+            #expect(textContent.text.contains("\"rawMarkdown\""))
+            #expect(textContent.text.contains("Meet the Composable Architecture"))
+        }
+
+        await index.disconnect()
+    }
+
+    @Test("read_document resolves legacy .doccarchive package URIs")
+    func readDocumentResolvesLegacyDocCArchiveURI() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        let canonicalURI = "packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/gettingstarted"
+        let legacyURI = "packages://third-party/src-3/acme%2Facme-routing@1.25.5/docc/composablearchitecture.doccarchive/documentation/composablearchitecture/gettingstarted"
+        let markdown = "# Getting started\n\nLegacy URI compatibility content."
+        let escapedMarkdown = markdown
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        let jsonData = "{\"title\":\"Getting started\",\"url\":\"\(canonicalURI)\",\"rawMarkdown\":\"\(escapedMarkdown)\",\"source\":\"packages\",\"framework\":\"swift-composable-architecture\"}"
+
+        try await index.indexDocument(
+            uri: canonicalURI,
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "swift-composable-architecture",
+            title: "Getting started",
+            content: "fts lane text",
+            filePath: "/test/gettingstarted.json",
+            contentHash: "legacy-uri-provider-hash",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages,
+            jsonData: jsonData
+        )
+
+        let provider = CompositeToolProvider(searchIndex: index, sampleDatabase: nil)
+        let markdownArgs: [String: AnyCodable] = [
+            "uri": AnyCodable(legacyURI),
+            "format": AnyCodable("markdown"),
+        ]
+
+        let result = try await provider.callTool(name: "read_document", arguments: markdownArgs)
+        if case let .text(textContent) = result.content.first {
+            #expect(textContent.text.contains("Legacy URI compatibility content."))
+        } else {
+            Issue.record("Expected text content response")
+        }
+
+        await index.disconnect()
+    }
 }
 
 private extension String {
