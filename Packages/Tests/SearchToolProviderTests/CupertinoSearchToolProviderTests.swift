@@ -179,6 +179,58 @@ struct CompositeToolProviderInitTests {
         await index.disconnect()
     }
 
+    @Test("Provider initializes with overlay search index only")
+    func initWithOverlaySearchIndexOnly() async throws {
+        let (overlayIndex, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        let overlayURI = "packages://third-party/src-1/docs/overlay-only"
+        try await overlayIndex.indexDocument(
+            uri: overlayURI,
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Overlay Only Guide",
+            content: "Overlay-only index content for provider initialization coverage.",
+            filePath: "/test/overlay-only.md",
+            contentHash: "overlay-only-hash",
+            lastCrawled: Date(),
+            sourceType: "packages"
+        )
+
+        let provider = CompositeToolProvider(
+            searchIndex: nil,
+            overlaySearchIndex: overlayIndex,
+            sampleDatabase: nil
+        )
+
+        let toolsResult = try await provider.listTools(cursor: nil)
+        #expect(toolsResult.tools.contains { $0.name == Shared.Constants.Search.toolSearch })
+        #expect(toolsResult.tools.contains { $0.name == Shared.Constants.Search.toolListFrameworks })
+        #expect(toolsResult.tools.contains { $0.name == Shared.Constants.Search.toolReadDocument })
+
+        let searchArgs: [String: AnyCodable] = [
+            "query": AnyCodable("overlay-only"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.packages),
+            "limit": AnyCodable(5),
+        ]
+        let searchResult = try await provider.callTool(name: "search", arguments: searchArgs)
+        if case let .text(textContent) = searchResult.content.first {
+            #expect(textContent.text.contains(overlayURI))
+            #expect(textContent.text.contains("Overlay Only Guide"))
+        }
+
+        let readArgs: [String: AnyCodable] = [
+            "uri": AnyCodable(overlayURI),
+            "format": AnyCodable("markdown"),
+        ]
+        let readResult = try await provider.callTool(name: "read_document", arguments: readArgs)
+        if case let .text(textContent) = readResult.content.first {
+            #expect(textContent.text.contains("Overlay-only index content"))
+        }
+
+        await overlayIndex.disconnect()
+    }
+
     @Test("Provider initializes with sample database only")
     func initWithSampleDatabaseOnly() async throws {
         let (database, cleanup) = try await createTestSampleDatabase()

@@ -125,6 +125,70 @@ struct MCPCommandTests {
         print("   ✅ Read resource test passed!")
     }
 
+    @Test("Read documentation resource from overlay index when primary misses")
+    func readDocsResourceFromOverlayIndex() async throws {
+        print("🧪 Test: Read docs resource from overlay index")
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cupertino-mcp-overlay-read-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let primaryDB = tempDir.appendingPathComponent("search.db")
+        let overlayDB = tempDir.appendingPathComponent("overlay-search.db")
+        let primaryIndex = try await Search.Index(dbPath: primaryDB)
+        let overlayIndex = try await Search.Index(dbPath: overlayDB)
+
+        defer {
+            Task {
+                await primaryIndex.disconnect()
+                await overlayIndex.disconnect()
+            }
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        try await primaryIndex.indexDocument(
+            uri: "packages://core/acme-routing/introduction",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Primary Introduction",
+            content: "Primary search index content.",
+            filePath: "/test/primary-introduction.md",
+            contentHash: "primary-hash",
+            lastCrawled: Date()
+        )
+        try await overlayIndex.indexDocument(
+            uri: "packages://third-party/src-1/docs/overlay-guide",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Overlay Guide",
+            content: "This content exists only in the overlay index.",
+            filePath: "/test/overlay-guide.md",
+            contentHash: "overlay-hash",
+            lastCrawled: Date()
+        )
+
+        let config = Shared.Configuration(
+            crawler: Shared.CrawlerConfiguration(outputDirectory: tempDir),
+            changeDetection: Shared.ChangeDetectionConfiguration(),
+            output: Shared.OutputConfiguration()
+        )
+        let provider = DocsResourceProvider(
+            configuration: config,
+            searchIndex: primaryIndex,
+            overlaySearchIndex: overlayIndex
+        )
+
+        let result = try await provider.readResource(uri: "packages://third-party/src-1/docs/overlay-guide")
+
+        #expect(!result.contents.isEmpty, "Overlay content should not be empty")
+        if let firstContent = result.contents.first,
+           case let .text(textContent) = firstContent {
+            #expect(textContent.text.contains("exists only in the overlay index"))
+            #expect(!textContent.text.contains("Primary search index content"))
+            print("   ✅ Overlay resource read succeeded")
+        }
+    }
+
     @Test("Register search tool provider", .tags(.integration), .serialized)
     @MainActor
     func registerSearchProvider() async throws {
