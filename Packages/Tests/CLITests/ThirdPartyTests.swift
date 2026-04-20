@@ -1,5 +1,7 @@
 @testable import CLI
 import Foundation
+@testable import Search
+@testable import Shared
 import Testing
 
 // MARK: - Third-Party Lifecycle Tests
@@ -176,6 +178,206 @@ struct ThirdPartyTests {
 
         #expect(extracted.contains("An overload of `Reducer()` that takes a description of protocol conformances."))
         #expect(!extracted.contains("An overload of\n\n`Reducer()`\n\nthat takes"))
+    }
+
+    @Test("DocC display markdown rendering preserves sections, lists, and links")
+    func doccDisplayMarkdownPreservesStructure() {
+        let json: [String: Any] = [
+            "title": "ComposableArchitecture",
+            "references": [
+                "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer": [
+                    "title": "Reducer",
+                    "url": "/documentation/composablearchitecture/reducer"
+                ]
+            ],
+            "topicSections": [
+                [
+                    "title": "Essentials",
+                    "identifiers": ["doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer"]
+                ]
+            ],
+            "primaryContentSections": [
+                [
+                    "kind": "content",
+                    "content": [
+                        [
+                            "type": "unorderedList",
+                            "items": [
+                                ["content": [["type": "text", "text": "First item"]]],
+                                ["content": [["type": "text", "text": "Second item"]]],
+                            ]
+                        ],
+                        [
+                            "type": "orderedList",
+                            "items": [
+                                ["content": [["type": "text", "text": "Step one"]]],
+                                ["content": [["type": "text", "text": "Step two"]]],
+                            ]
+                        ],
+                    ]
+                ]
+            ]
+        ]
+
+        let markdown = ThirdPartyDocCTextExtractor.renderedMarkdown(from: json)
+
+        #expect(markdown.contains("# ComposableArchitecture"))
+        #expect(markdown.contains("## Essentials"))
+        #expect(markdown.contains("- [Reducer](https://developer.apple.com/documentation/composablearchitecture/reducer)"))
+        #expect(markdown.contains("- First item"))
+        #expect(markdown.contains("- Second item"))
+        #expect(markdown.contains("1. Step one"))
+        #expect(markdown.contains("2. Step two"))
+    }
+
+    @Test("DocC display markdown keeps reference links when inline text is present")
+    func doccDisplayMarkdownReferenceWithTextKeepsLink() {
+        let json: [String: Any] = [
+            "title": "Reducer Docs",
+            "references": [
+                "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer": [
+                    "title": "Reducer",
+                    "url": "/documentation/composablearchitecture/reducer"
+                ]
+            ],
+            "discussion": [
+                [
+                    "type": "paragraph",
+                    "inlineContent": [
+                        ["type": "text", "text": "Use "],
+                        [
+                            "type": "reference",
+                            "text": "@Reducer",
+                            "identifier": "doc://ComposableArchitecture/documentation/ComposableArchitecture/Reducer"
+                        ],
+                        ["type": "text", "text": " to define features."]
+                    ]
+                ]
+            ]
+        ]
+
+        let markdown = ThirdPartyDocCTextExtractor.renderedMarkdown(from: json)
+
+        #expect(markdown.contains("[@Reducer](https://developer.apple.com/documentation/composablearchitecture/reducer)"))
+        #expect(markdown.contains("Use [@Reducer](https://developer.apple.com/documentation/composablearchitecture/reducer) to define features."))
+    }
+
+    @Test("DocC tutorial overview rendering preserves chapters, resources, and tutorial links")
+    func doccDisplayMarkdownTutorialOverviewPreservesStructure() {
+        let json: [String: Any] = [
+            "metadata": [
+                "title": "Meet the Composable Architecture",
+            ],
+            "title": "Meet the Composable Architecture",
+            "references": [
+                "doc://ComposableArchitecture/tutorials/ComposableArchitecture/01-01-YourFirstFeature": [
+                    "title": "Your first feature",
+                    "url": "/tutorials/composablearchitecture/01-01-yourfirstfeature"
+                ],
+                "https://github.com/pointfreeco/swift-composable-architecture/discussions": [
+                    "title": "Discuss on GitHub",
+                    "url": "https://github.com/pointfreeco/swift-composable-architecture/discussions"
+                ],
+            ],
+            "sections": [
+                [
+                    "kind": "hero",
+                    "title": "Meet the Composable Architecture",
+                    "content": [
+                        [
+                            "type": "paragraph",
+                            "inlineContent": [
+                                ["type": "text", "text": "Start learning TCA with an end-to-end tutorial."]
+                            ]
+                        ]
+                    ],
+                    "action": [
+                        "overridingTitle": "Get started",
+                        "identifier": "doc://ComposableArchitecture/tutorials/ComposableArchitecture/01-01-YourFirstFeature"
+                    ]
+                ],
+                [
+                    "kind": "volume",
+                    "chapters": [
+                        [
+                            "name": "Essentials",
+                            "content": [
+                                [
+                                    "type": "paragraph",
+                                    "inlineContent": [
+                                        ["type": "text", "text": "Build and test your first feature."]
+                                    ]
+                                ]
+                            ],
+                            "tutorials": [
+                                "doc://ComposableArchitecture/tutorials/ComposableArchitecture/01-01-YourFirstFeature"
+                            ]
+                        ]
+                    ]
+                ],
+                [
+                    "kind": "resources",
+                    "tiles": [
+                        [
+                            "title": "Forums",
+                            "content": [
+                                [
+                                    "type": "paragraph",
+                                    "inlineContent": [
+                                        ["type": "reference", "identifier": "https://github.com/pointfreeco/swift-composable-architecture/discussions"]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let markdown = ThirdPartyDocCTextExtractor.renderedMarkdown(from: json)
+
+        #expect(markdown.contains("### Essentials"))
+        #expect(markdown.contains("Build and test your first feature."))
+        #expect(markdown.contains("- [Your first feature](https://developer.apple.com/tutorials/composablearchitecture/01-01-yourfirstfeature)"))
+        #expect(markdown.contains("### Forums"))
+        #expect(markdown.contains("[Discuss on GitHub](https://github.com/pointfreeco/swift-composable-architecture/discussions)"))
+    }
+
+    @Test("DocC display markdown uses canonical page title for top heading")
+    func doccDisplayMarkdownUsesCanonicalPageTitleForTopHeading() {
+        let json: [String: Any] = [
+            "title": "Discuss on Swift Forums",
+            "metadata": [
+                "title": "Meet the Composable Architecture",
+            ],
+            "sections": [
+                [
+                    "kind": "resources",
+                    "tiles": [
+                        [
+                            "title": "Discuss on Swift Forums",
+                            "content": [
+                                [
+                                    "type": "paragraph",
+                                    "inlineContent": [
+                                        ["type": "text", "text": "Talk with other users about TCA."]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let markdown = ThirdPartyDocCTextExtractor.renderedMarkdown(
+            from: json,
+            pageTitle: "Meet the Composable Architecture"
+        )
+        let firstLine = markdown.split(separator: "\n").first.map(String.init)
+
+        #expect(firstLine == "# Meet the Composable Architecture")
+        #expect(markdown.contains("### Discuss on Swift Forums"))
     }
 
     @Test("Interactive yes/no parsing is case-insensitive")
@@ -616,6 +818,257 @@ struct ThirdPartyTests {
         #expect(result.doccDocsIndexed > 0)
     }
 
+    @Test("DocC indexing prefers canonical metadata title over generic title")
+    func doccCanonicalTitleSelection() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "canonical-title")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            commandExecutor: { executable, arguments, _ in
+                if executable == "/usr/bin/swift", arguments == ["package", "dump-package"] {
+                    return Self.dumpPackageJSON(name: "FixtureLib", libraryProducts: ["FixtureLib"])
+                }
+                if executable == "/usr/bin/swift", arguments == ["package", "plugin", "--list"] {
+                    return "No command plugins"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments == ["-list"] {
+                    return "Information about package \"FixtureLib\":\n    Schemes:\n        FixtureLib-Package\n"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments.contains("docbuild"),
+                   let derivedDataPath = Self.argumentValue(after: "-derivedDataPath", in: arguments) {
+                    let payload: [String: Any] = [
+                        "title": "Related Documentation",
+                        "metadata": [
+                            "title": "Meet the Composable Architecture",
+                            "modules": [
+                                ["name": "ComposableArchitecture"]
+                            ]
+                        ],
+                        "sections": [
+                            [
+                                "kind": "resources",
+                                "tiles": [
+                                    [
+                                        "title": "Discuss on Swift Forums",
+                                        "content": [
+                                            [
+                                                "type": "paragraph",
+                                                "inlineContent": [
+                                                    [
+                                                        "type": "text",
+                                                        "text": "Talk about the architecture with the community."
+                                                    ]
+                                                ]
+                                            ]
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ],
+                        "primaryContentSections": [
+                            [
+                                "kind": "content",
+                                "content": [
+                                    [
+                                        "type": "paragraph",
+                                        "inlineContent": [
+                                            [
+                                                "type": "text",
+                                                "text": "Unique canonical title marker content."
+                                            ]
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                    try Self.makeDocCArchive(
+                        inDerivedDataPath: derivedDataPath,
+                        archiveName: "FixtureLib",
+                        payload: payload
+                    )
+                    return "** BUILD SUCCEEDED **"
+                }
+                throw ThirdPartyManagerError.commandFailed(
+                    ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                    "Unexpected command in test"
+                )
+            }
+        )
+
+        _ = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+
+        let searchIndex = try await Search.Index(dbPath: storeDir.appendingPathComponent("search.db"))
+        let results = try await searchIndex.search(
+            query: "Unique canonical title marker content",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: nil,
+            limit: 5
+        )
+        let result = try #require(results.first(where: { $0.title == "Meet the Composable Architecture" }))
+        let markdown = try await searchIndex.getDocumentContent(uri: result.uri, format: .markdown)
+        let firstLine = markdown?.split(separator: "\n").first.map(String.init)
+
+        #expect(firstLine == "# Meet the Composable Architecture")
+        #expect(markdown?.contains("### Discuss on Swift Forums") == true)
+        await searchIndex.disconnect()
+    }
+
+    @Test("DocC indexing rewrites internal developer links with symbol signatures to package URIs")
+    func doccRewritesDeveloperLinksToPackageURIs() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("fixture")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeSourceTrackingFixture(at: sourceDir, marker: "rewrite-links")
+
+        let manager = ThirdPartyManager(
+            storeURL: storeDir,
+            commandExecutor: { executable, arguments, _ in
+                if executable == "/usr/bin/swift", arguments == ["package", "dump-package"] {
+                    return Self.dumpPackageJSON(name: "FixtureLib", libraryProducts: ["FixtureLib"])
+                }
+                if executable == "/usr/bin/swift", arguments == ["package", "plugin", "--list"] {
+                    return "No command plugins"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments == ["-list"] {
+                    return "Information about package \"FixtureLib\":\n    Schemes:\n        FixtureLib-Package\n"
+                }
+                if executable == "/usr/bin/xcodebuild", arguments.contains("docbuild"),
+                   let derivedDataPath = Self.argumentValue(after: "-derivedDataPath", in: arguments) {
+                    let payload: [String: Any] = [
+                        "title": "ComposableArchitecture",
+                        "references": [
+                            "doc://FixtureLib/documentation/composablearchitecture/inmemoryfilestorage()": [
+                                "title": "InMemoryFileStorage()",
+                                "url": "/documentation/composablearchitecture/inmemoryfilestorage()",
+                            ],
+                            "doc://FixtureLib/documentation/composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)": [
+                                "title": "init(wrappedValue:fileID:filePath:line:column:)",
+                                "url": "/documentation/composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)",
+                            ],
+                            "https://github.com/pointfreeco/swift-composable-architecture/discussions": [
+                                "title": "Discuss on GitHub",
+                                "url": "https://github.com/pointfreeco/swift-composable-architecture/discussions",
+                            ]
+                        ],
+                        "primaryContentSections": [
+                            [
+                                "kind": "content",
+                                "content": [
+                                    [
+                                        "type": "paragraph",
+                                        "inlineContent": [
+                                            [
+                                                "type": "text",
+                                                "text": "docc-link-rewrite-marker",
+                                            ],
+                                            [
+                                                "type": "text",
+                                                "text": " ",
+                                            ],
+                                            [
+                                                "type": "reference",
+                                                "identifier": "doc://FixtureLib/documentation/composablearchitecture/inmemoryfilestorage()",
+                                            ],
+                                            [
+                                                "type": "text",
+                                                "text": " and "
+                                            ],
+                                            [
+                                                "type": "reference",
+                                                "identifier": "doc://FixtureLib/documentation/composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)",
+                                            ],
+                                            [
+                                                "type": "text",
+                                                "text": ". For discussion, visit "
+                                            ],
+                                            [
+                                                "type": "reference",
+                                                "identifier": "https://github.com/pointfreeco/swift-composable-architecture/discussions",
+                                            ],
+                                            [
+                                                "type": "text",
+                                                "text": ".",
+                                            ],
+                                        ],
+                                    ]
+                                ],
+                            ]
+                        ],
+                    ]
+                    try Self.makeDocCArchive(
+                        inDerivedDataPath: derivedDataPath,
+                        archiveName: "FixtureLib",
+                        payload: payload,
+                        additionalDocuments: [
+                            "composablearchitecture/inmemoryfilestorage()": [
+                                "title": "InMemoryFileStorage()",
+                                "abstract": [
+                                    [
+                                        "type": "text",
+                                        "text": "A storage dependency used in tests."
+                                    ]
+                                ],
+                            ],
+                            "composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)": [
+                                "title": "init(wrappedValue:fileID:filePath:line:column:)",
+                                "abstract": [
+                                    [
+                                        "type": "text",
+                                        "text": "Initializes binding state with source location metadata."
+                                    ]
+                                ],
+                            ],
+                        ]
+                    )
+                    return "** BUILD SUCCEEDED **"
+                }
+                throw ThirdPartyManagerError.commandFailed(
+                    ([URL(fileURLWithPath: executable).lastPathComponent] + arguments).joined(separator: " "),
+                    "Unexpected command in test"
+                )
+            }
+        )
+
+        let result = try await manager.add(
+            sourceInput: sourceDir.path,
+            buildOptions: .automatic(allowBuild: true, nonInteractive: true)
+        )
+        #expect(result.doccStatus == .succeeded)
+        #expect(result.doccDocsIndexed > 0)
+
+        let searchIndex = try await Search.Index(dbPath: storeDir.appendingPathComponent("search.db"))
+        let results = try await searchIndex.search(
+            query: "docc-link-rewrite-marker",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: nil,
+            limit: 5
+        )
+        let uri = try #require(results.first?.uri)
+        let markdown = try await searchIndex.getDocumentContent(uri: uri, format: .markdown)
+
+        #expect(markdown?.contains("packages://third-party/") == true)
+        #expect(markdown?.contains("/docc/FixtureLib/data/documentation/composablearchitecture/inmemoryfilestorage()") == true)
+        #expect(markdown?.contains("/docc/FixtureLib/data/documentation/composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)") == true)
+        #expect(markdown?.contains("https://developer.apple.com/documentation/composablearchitecture/inmemoryfilestorage()") == false)
+        #expect(markdown?.contains("https://developer.apple.com/documentation/composablearchitecture/bindingstate/init(wrappedvalue:fileid:filepath:line:column:)") == false)
+        #expect(markdown?.contains("https://github.com/pointfreeco/swift-composable-architecture/discussions") == true)
+        #expect(markdown?.contains("source: file:///") == false)
+        #expect(markdown?.hasPrefix("---\n") == false)
+
+        await searchIndex.disconnect()
+    }
+
     @Test("Remove works for local source even if source directory no longer exists")
     func removeWithoutExistingLocalPath() async throws {
         let testDir = Self.testDirectory()
@@ -1024,14 +1477,16 @@ private extension ThirdPartyTests {
 
     static func makeDocCArchive(
         inDerivedDataPath derivedDataPath: String,
-        archiveName: String
+        archiveName: String,
+        payload: [String: Any]? = nil,
+        additionalDocuments: [String: [String: Any]] = [:]
     ) throws {
         let archiveRoot = URL(fileURLWithPath: derivedDataPath)
             .appendingPathComponent("Build/Products/Debug/\(archiveName).doccarchive")
         let docsDir = archiveRoot.appendingPathComponent("data/documentation")
         try FileManager.default.createDirectory(at: docsDir, withIntermediateDirectories: true)
 
-        let payload: [String: Any] = [
+        let archivePayload: [String: Any] = payload ?? [
             "title": archiveName,
             "abstract": [
                 [
@@ -1056,8 +1511,23 @@ private extension ThirdPartyTests {
                 ]
             ]
         ]
+        try writeDocCPayload(archivePayload, to: docsDir.appendingPathComponent("overview.json"))
+
+        for (relativePath, documentPayload) in additionalDocuments {
+            let documentURL = docsDir
+                .appendingPathComponent(relativePath)
+                .appendingPathExtension("json")
+            try writeDocCPayload(documentPayload, to: documentURL)
+        }
+    }
+
+    static func writeDocCPayload(_ payload: [String: Any], to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        try data.write(to: docsDir.appendingPathComponent("overview.json"), options: .atomic)
+        try data.write(to: url, options: .atomic)
     }
 
     static func readManifestInstalls(from storeDir: URL) throws -> [ManifestFile.Install] {

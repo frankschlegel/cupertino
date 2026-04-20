@@ -142,7 +142,10 @@ struct ThirdPartyManager {
     private struct DocCIndexedDocument {
         let uriSuffix: String
         let title: String
-        let content: String
+        let searchContent: String
+        let displayMarkdown: String
+        let rawJSON: String?
+        let rawJSONObject: Any?
         let filePath: String
     }
 
@@ -1374,7 +1377,10 @@ struct ThirdPartyManager {
                         DocCIndexedDocument(
                             uriSuffix: uriSuffix,
                             title: title,
-                            content: content,
+                            searchContent: content,
+                            displayMarkdown: content,
+                            rawJSON: nil,
+                            rawJSONObject: nil,
                             filePath: fileURL.path
                         )
                     )
@@ -1694,8 +1700,33 @@ struct ThirdPartyManager {
                     searchableContent = rawJSON
                 }
 
-                let title = (jsonObject.flatMap { firstString(forKey: "title", in: $0) })
-                    ?? humanizedTitle(from: fileURL.deletingPathExtension().lastPathComponent)
+                let title = canonicalDocCTitle(
+                    from: jsonObject,
+                    fallbackFilename: fileURL.deletingPathExtension().lastPathComponent
+                )
+
+                let isTutorialDocument = relative.contains("data/tutorials/")
+                let displayMarkdown: String
+                if isTutorialDocument, let jsonObject {
+                    // Tutorial overviews need richer section/chapter rendering than Apple's converter currently provides.
+                    let rendered = ThirdPartyDocCTextExtractor.renderedMarkdown(from: jsonObject, pageTitle: title)
+                    if !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        displayMarkdown = rendered
+                    } else if let converted = AppleJSONToMarkdown.convert(data, url: fileURL),
+                              !converted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        displayMarkdown = converted
+                    } else {
+                        displayMarkdown = searchableContent
+                    }
+                } else if let converted = AppleJSONToMarkdown.convert(data, url: fileURL),
+                          !converted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    displayMarkdown = converted
+                } else if let jsonObject {
+                    let rendered = ThirdPartyDocCTextExtractor.renderedMarkdown(from: jsonObject, pageTitle: title)
+                    displayMarkdown = rendered.isEmpty ? searchableContent : rendered
+                } else {
+                    displayMarkdown = searchableContent
+                }
 
                 let outputName = outputRoot.deletingPathExtension().lastPathComponent
                 let docPath = "\(outputName)/\(relative)"
@@ -1708,7 +1739,10 @@ struct ThirdPartyManager {
                     DocCIndexedDocument(
                         uriSuffix: uriSuffix,
                         title: title,
-                        content: searchableContent,
+                        searchContent: searchableContent,
+                        displayMarkdown: displayMarkdown,
+                        rawJSON: rawJSON,
+                        rawJSONObject: jsonObject,
                         filePath: fileURL.path
                     )
                 )
@@ -1716,6 +1750,83 @@ struct ThirdPartyManager {
         }
 
         return documents
+    }
+
+    private func canonicalDocCTitle(from jsonObject: Any?, fallbackFilename: String) -> String {
+        guard let root = jsonObject as? [String: Any] else {
+            return humanizedTitle(from: fallbackFilename)
+        }
+
+        let metadata = valueForKey("metadata", in: root) as? [String: Any]
+        let metadataTitle = metadata.flatMap { valueForKey("title", in: $0) as? String }
+        let rootTitle = valueForKey("title", in: root) as? String
+        let moduleName = ((valueForKey("modules", in: metadata ?? [:]) as? [Any])?
+            .compactMap { $0 as? [String: Any] }
+            .compactMap { valueForKey("name", in: $0) as? String }
+            .first)
+        let identifierPath = ((valueForKey("identifier", in: root) as? [String: Any])
+            .flatMap { valueForKey("url", in: $0) as? String })
+            .flatMap(titleFromIdentifierPath)
+
+        let candidates = [metadataTitle, moduleName, rootTitle, identifierPath]
+            .compactMap(normalizeTitleCandidate)
+
+        if let first = candidates.first(where: { !isGenericDocCTitle($0) }) {
+            return first
+        }
+        if let first = candidates.first {
+            return first
+        }
+        return humanizedTitle(from: fallbackFilename)
+    }
+
+    private func normalizeTitleCandidate(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func isGenericDocCTitle(_ value: String) -> Bool {
+        let generic = Set([
+            "related documentation",
+            "documentation",
+            "overview",
+            "details",
+            "reference",
+            "symbol",
+            "article",
+            "tutorial",
+            "topics",
+            "resources",
+        ])
+        return generic.contains(value.lowercased())
+    }
+
+    private func titleFromIdentifierPath(_ value: String) -> String? {
+        let segments = value
+            .split(separator: "/")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard let raw = segments.last else {
+            return nil
+        }
+
+        let decoded = raw.removingPercentEncoding ?? raw
+        if decoded.contains("-") {
+            return decoded
+                .split(separator: "-")
+                .map { $0.capitalized }
+                .joined(separator: " ")
+        }
+        return decoded
+    }
+
+    private func valueForKey(_ key: String, in dictionary: [String: Any]) -> Any? {
+        if let exact = dictionary[key] {
+            return exact
+        }
+        let lowercasedKey = key.lowercased()
+        return dictionary.first(where: { $0.key.lowercased() == lowercasedKey })?.value
     }
 
     private func firstString(forKey key: String, in value: Any) -> String? {
@@ -1895,30 +2006,49 @@ struct ThirdPartyManager {
     ) async throws -> Int {
         var indexed = 0
         var seenDocumentKeys = Set<String>()
+        let knownDocCURIs = Set(documents.map { "\(uriPrefix)\(encodedProvenance)/\($0.uriSuffix)" })
+        let packageURIsByDocCPath = packageURIMapForKnownDocCDocuments(knownDocCURIs)
         let progressInterval = 2_000
         let shouldLogProgress = documents.count >= progressInterval * 2
 
         for (position, document) in documents.enumerated() {
-            guard !document.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let uri = "\(uriPrefix)\(encodedProvenance)/\(document.uriSuffix)"
+            let cleanedMarkdown = stripLeadingFrontMatter(document.displayMarkdown)
+            let displayMarkdown = rewriteDeveloperDocLinksToPackageURIs(
+                in: cleanedMarkdown,
+                packageURIsByDocCPath: packageURIsByDocCPath
+            )
+            let searchContent = document.searchContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? displayMarkdown
+                : document.searchContent
+            guard !searchContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
 
-            let contentHash = HashUtilities.sha256(of: document.content)
-            let dedupeKey = "\(document.uriSuffix)::\(contentHash)"
+            let contentHash = HashUtilities.sha256(of: searchContent)
+            let markdownHash = HashUtilities.sha256(of: displayMarkdown)
+            let dedupeKey = "\(document.uriSuffix)::\(contentHash)::\(markdownHash)"
             guard seenDocumentKeys.insert(dedupeKey).inserted else {
                 continue
             }
+            let jsonData = buildDocCJSONPayload(
+                uri: uri,
+                framework: framework,
+                document: document,
+                displayMarkdown: displayMarkdown
+            )
 
             try await searchIndex.indexDocument(
-                uri: "\(uriPrefix)\(encodedProvenance)/\(document.uriSuffix)",
+                uri: uri,
                 source: Shared.Constants.SourcePrefix.packages,
                 framework: framework,
                 title: document.title,
-                content: document.content,
+                content: searchContent,
                 filePath: document.filePath,
                 contentHash: contentHash,
                 lastCrawled: Date(),
-                sourceType: Shared.Constants.SourcePrefix.packages
+                sourceType: Shared.Constants.SourcePrefix.packages,
+                jsonData: jsonData
             )
             indexed += 1
 
@@ -1928,6 +2058,221 @@ struct ThirdPartyManager {
         }
 
         return indexed
+    }
+
+    private func buildDocCJSONPayload(
+        uri: String,
+        framework: String,
+        document: DocCIndexedDocument,
+        displayMarkdown: String
+    ) -> String? {
+        var payload: [String: Any] = [
+            "title": document.title,
+            "url": uri,
+            "rawMarkdown": displayMarkdown,
+            "source": Shared.Constants.SourcePrefix.packages,
+            "framework": framework,
+        ]
+
+        var doccMetadata: [String: Any] = [
+            "uriSuffix": document.uriSuffix,
+            "filePath": document.filePath,
+        ]
+        if let rawJSONObject = document.rawJSONObject {
+            doccMetadata["raw"] = rawJSONObject
+        } else if let rawJSON = document.rawJSON {
+            doccMetadata["rawJSON"] = rawJSON
+        }
+        payload["docc"] = doccMetadata
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return json
+    }
+
+    private func stripLeadingFrontMatter(_ markdown: String) -> String {
+        let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+        guard normalized.hasPrefix("---\n"),
+              let closingRange = normalized.range(of: "\n---\n") else {
+            return markdown
+        }
+
+        let frontMatterEnd = closingRange.upperBound
+        let remainder = normalized[frontMatterEnd...]
+        return remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func rewriteDeveloperDocLinksToPackageURIs(
+        in markdown: String,
+        packageURIsByDocCPath: [String: String]
+    ) -> String {
+        guard !packageURIsByDocCPath.isEmpty else {
+            return markdown
+        }
+
+        return rewriteMarkdownLinkDestinations(in: markdown) { destination in
+            packageURIForDeveloperDocLinkDestination(
+                destination,
+                packageURIsByDocCPath: packageURIsByDocCPath
+            )
+        }
+    }
+
+    private func packageURIMapForKnownDocCDocuments(_ knownDocCURIs: Set<String>) -> [String: String] {
+        var urisByPath: [String: String] = [:]
+
+        for uri in knownDocCURIs.sorted() {
+            guard let path = normalizedDocCPathSuffix(fromPackageURI: uri) else {
+                continue
+            }
+            urisByPath[path] = uri
+        }
+
+        return urisByPath
+    }
+
+    private func rewriteMarkdownLinkDestinations(
+        in markdown: String,
+        transform: (String) -> String?
+    ) -> String {
+        var replacements: [(Range<String.Index>, String)] = []
+        var index = markdown.startIndex
+
+        while index < markdown.endIndex {
+            guard markdown[index] == "]" else {
+                index = markdown.index(after: index)
+                continue
+            }
+
+            let openingParenthesisIndex = markdown.index(after: index)
+            guard openingParenthesisIndex < markdown.endIndex,
+                  markdown[openingParenthesisIndex] == "(" else {
+                index = markdown.index(after: index)
+                continue
+            }
+
+            let destinationStart = markdown.index(after: openingParenthesisIndex)
+            guard let destinationRange = markdownLinkDestinationRange(
+                in: markdown,
+                startingAt: destinationStart
+            ) else {
+                index = markdown.index(after: index)
+                continue
+            }
+
+            let destination = String(markdown[destinationRange])
+            if let rewrittenDestination = transform(destination),
+               rewrittenDestination != destination {
+                replacements.append((destinationRange, rewrittenDestination))
+            }
+
+            index = destinationRange.upperBound < markdown.endIndex
+                ? markdown.index(after: destinationRange.upperBound)
+                : destinationRange.upperBound
+        }
+
+        guard !replacements.isEmpty else {
+            return markdown
+        }
+
+        var rewritten = markdown
+        for (range, replacement) in replacements.reversed() {
+            rewritten.replaceSubrange(range, with: replacement)
+        }
+        return rewritten
+    }
+
+    private func markdownLinkDestinationRange(
+        in markdown: String,
+        startingAt start: String.Index
+    ) -> Range<String.Index>? {
+        var depth = 1
+        var index = start
+
+        while index < markdown.endIndex {
+            let character = markdown[index]
+
+            if character == "\\" {
+                index = markdown.index(after: index)
+                if index < markdown.endIndex {
+                    index = markdown.index(after: index)
+                }
+                continue
+            }
+
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    return start..<index
+                }
+            }
+
+            index = markdown.index(after: index)
+        }
+
+        return nil
+    }
+
+    private func packageURIForDeveloperDocLinkDestination(
+        _ destination: String,
+        packageURIsByDocCPath: [String: String]
+    ) -> String? {
+        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let isWrappedInAngleBrackets = trimmed.hasPrefix("<") && trimmed.hasSuffix(">")
+        let rawDestination = isWrappedInAngleBrackets
+            ? String(trimmed.dropFirst().dropLast())
+            : trimmed
+
+        guard let normalizedPath = normalizedDeveloperDocCPath(from: rawDestination),
+              let packageURI = packageURIsByDocCPath[normalizedPath] else {
+            return nil
+        }
+
+        return isWrappedInAngleBrackets ? "<\(packageURI)>" : packageURI
+    }
+
+    private func normalizedDocCPathSuffix(fromPackageURI uri: String) -> String? {
+        guard let dataRange = uri.range(of: "/data/") else {
+            return nil
+        }
+        return normalizeDocCPath(String(uri[dataRange.upperBound...]))
+    }
+
+    private func normalizedDeveloperDocCPath(from urlString: String) -> String? {
+        guard let hostRange = urlString.range(
+            of: "https://developer.apple.com/",
+            options: [.caseInsensitive, .anchored]
+        ) else {
+            return nil
+        }
+
+        var path = String(urlString[hostRange.upperBound...])
+        if let fragmentIndex = path.firstIndex(of: "#") {
+            path = String(path[..<fragmentIndex])
+        }
+        if let queryIndex = path.firstIndex(of: "?") {
+            path = String(path[..<queryIndex])
+        }
+
+        let normalized = normalizeDocCPath(path)
+        guard normalized.hasPrefix("documentation/") || normalized.hasPrefix("tutorials/") else {
+            return nil
+        }
+        return normalized
+    }
+
+    private func normalizeDocCPath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let decoded = trimmed.removingPercentEncoding ?? trimmed
+        return decoded.lowercased()
     }
 
     private func indexFallbackSamples(
@@ -2774,6 +3119,16 @@ struct ThirdPartyPrompting: Sendable {
 }
 
 enum ThirdPartyDocCTextExtractor {
+    private enum RenderMode {
+        case search
+        case display
+    }
+
+    private struct ReferenceInfo {
+        let title: String
+        let url: String?
+    }
+
     private static let excludedSubtrees: Set<String> = [
         "references",
         "declarations",
@@ -2788,19 +3143,27 @@ enum ThirdPartyDocCTextExtractor {
         "overview",
         "discussion",
         "primaryContentSections",
+        "topicSections",
+        "seeAlsoSections",
+        "relationshipsSections",
+        "chapters",
+        "resources",
+        "tutorials",
         "content",
         "inlineContent",
         "sections",
         "children",
         "items",
         "steps",
+        "identifiers",
         "caption",
         "code",
         "text",
+        "tiles",
     ]
 
     static func searchableContent(from jsonObject: Any) -> String {
-        let referenceTitles = referenceTitlesLookup(from: jsonObject)
+        let references = referencesLookup(from: jsonObject)
         var blocks: [String] = []
 
         if let title = firstString(forKey: "title", in: jsonObject) {
@@ -2810,7 +3173,26 @@ enum ThirdPartyDocCTextExtractor {
         blocks.append(contentsOf: renderBlocks(
             from: jsonObject,
             currentKey: nil,
-            referenceTitles: referenceTitles
+            references: references,
+            mode: .search
+        ))
+
+        return finalizeBlocks(blocks)
+    }
+
+    static func renderedMarkdown(from jsonObject: Any, pageTitle: String? = nil) -> String {
+        let references = referencesLookup(from: jsonObject)
+        var blocks: [String] = []
+
+        if let title = pageTitle ?? firstString(forKey: "title", in: jsonObject) {
+            blocks.append("# \(normalizeInlineText(title))")
+        }
+
+        blocks.append(contentsOf: renderBlocks(
+            from: jsonObject,
+            currentKey: nil,
+            references: references,
+            mode: .display
         ))
 
         return finalizeBlocks(blocks)
@@ -2819,7 +3201,8 @@ enum ThirdPartyDocCTextExtractor {
     private static func renderBlocks(
         from value: Any,
         currentKey: String?,
-        referenceTitles: [String: String]
+        references: [String: ReferenceInfo],
+        mode: RenderMode
     ) -> [String] {
         switch value {
         case let dictionary as [String: Any]:
@@ -2831,7 +3214,7 @@ enum ThirdPartyDocCTextExtractor {
                 let loweredType = type.lowercased()
                 switch loweredType {
                 case "paragraph":
-                    if let paragraph = renderParagraph(from: dictionary, referenceTitles: referenceTitles) {
+                    if let paragraph = renderParagraph(from: dictionary, references: references, mode: mode) {
                         return [paragraph]
                     }
                     return []
@@ -2841,15 +3224,34 @@ enum ThirdPartyDocCTextExtractor {
                     guard let headingSource else {
                         return []
                     }
-                    let heading = renderInline(from: headingSource, referenceTitles: referenceTitles)
+                    let heading = renderInline(from: headingSource, references: references, mode: mode)
                     guard !heading.isEmpty else {
                         return []
+                    }
+                    if mode == .display {
+                        let level = (valueForKey("level", in: dictionary) as? Int) ?? 2
+                        return ["\(String(repeating: "#", count: max(1, min(6, level)))) \(heading)"]
                     }
                     return [heading]
                 case "codelisting":
                     return renderCodeListing(from: dictionary)
+                case "unorderedlist", "orderedlist":
+                    return renderList(
+                        from: dictionary,
+                        ordered: loweredType == "orderedlist",
+                        references: references,
+                        mode: mode
+                    )
+                case "listitem":
+                    return renderListItem(
+                        from: dictionary,
+                        ordered: false,
+                        index: nil,
+                        references: references,
+                        mode: mode
+                    )
                 case "text", "codevoice", "reference":
-                    let inline = renderInline(from: dictionary, referenceTitles: referenceTitles)
+                    let inline = renderInline(from: dictionary, references: references, mode: mode)
                     guard !inline.isEmpty else {
                         return []
                     }
@@ -2860,6 +3262,14 @@ enum ThirdPartyDocCTextExtractor {
             }
 
             var blocks: [String] = []
+            if mode == .display,
+               shouldRenderSectionHeading(for: currentKey),
+               let title = valueForKey("title", in: dictionary) as? String {
+                let normalized = normalizeInlineText(title)
+                if shouldKeep(normalized) {
+                    blocks.append("## \(normalized)")
+                }
+            }
             for key in narrativeKeys {
                 guard let nested = valueForKey(key, in: dictionary) else {
                     continue
@@ -2867,12 +3277,13 @@ enum ThirdPartyDocCTextExtractor {
                 blocks.append(contentsOf: renderBlocks(
                     from: nested,
                     currentKey: key.lowercased(),
-                    referenceTitles: referenceTitles
+                    references: references,
+                    mode: mode
                 ))
             }
 
             if blocks.isEmpty {
-                let fallback = renderInline(from: dictionary, referenceTitles: referenceTitles)
+                let fallback = renderInline(from: dictionary, references: references, mode: mode)
                 if !fallback.isEmpty {
                     blocks.append(fallback)
                 }
@@ -2880,8 +3291,12 @@ enum ThirdPartyDocCTextExtractor {
             return blocks
         case let array as [Any]:
             if isInlineFragmentArray(array) {
-                let inline = renderInline(from: array, referenceTitles: referenceTitles)
+                let inline = renderInline(from: array, references: references, mode: mode)
                 return inline.isEmpty ? [] : [inline]
+            }
+
+            if mode == .display, isSectionItemArray(currentKey: currentKey, array: array) {
+                return renderSectionItems(from: array, references: references)
             }
 
             var blocks: [String] = []
@@ -2889,13 +3304,24 @@ enum ThirdPartyDocCTextExtractor {
                 blocks.append(contentsOf: renderBlocks(
                     from: element,
                     currentKey: currentKey,
-                    referenceTitles: referenceTitles
+                    references: references,
+                    mode: mode
                 ))
             }
             return blocks
         case let string as String:
             guard let currentKey else {
                 return []
+            }
+            if currentKey == "identifiers" || currentKey == "tutorials" {
+                let rendered = renderIdentifier(string, references: references, mode: mode)
+                guard shouldKeep(rendered) else {
+                    return []
+                }
+                if mode == .display {
+                    return ["- \(rendered)"]
+                }
+                return [rendered]
             }
             guard currentKey == "text" || currentKey == "code" else {
                 return []
@@ -2912,7 +3338,8 @@ enum ThirdPartyDocCTextExtractor {
 
     private static func renderParagraph(
         from dictionary: [String: Any],
-        referenceTitles: [String: String]
+        references: [String: ReferenceInfo],
+        mode: RenderMode
     ) -> String? {
         let source = valueForKey("inlineContent", in: dictionary)
             ?? valueForKey("content", in: dictionary)
@@ -2920,7 +3347,7 @@ enum ThirdPartyDocCTextExtractor {
         guard let source else {
             return nil
         }
-        let paragraph = renderInline(from: source, referenceTitles: referenceTitles)
+        let paragraph = renderInline(from: source, references: references, mode: mode)
         return paragraph.isEmpty ? nil : paragraph
     }
 
@@ -2939,8 +3366,12 @@ enum ThirdPartyDocCTextExtractor {
         return ["```\(language)\n\(code)\n```"]
     }
 
-    private static func renderInline(from value: Any, referenceTitles: [String: String]) -> String {
-        let fragments = renderInlineFragments(from: value, referenceTitles: referenceTitles)
+    private static func renderInline(
+        from value: Any,
+        references: [String: ReferenceInfo],
+        mode: RenderMode
+    ) -> String {
+        let fragments = renderInlineFragments(from: value, references: references, mode: mode)
         guard !fragments.isEmpty else {
             return ""
         }
@@ -2949,7 +3380,8 @@ enum ThirdPartyDocCTextExtractor {
 
     private static func renderInlineFragments(
         from value: Any,
-        referenceTitles: [String: String]
+        references: [String: ReferenceInfo],
+        mode: RenderMode
     ) -> [String] {
         switch value {
         case let dictionary as [String: Any]:
@@ -2973,15 +3405,28 @@ enum ThirdPartyDocCTextExtractor {
                     }
                     return ["`\(escapeBackticks(normalized))`"]
                 case "reference":
-                    let reference = renderReferenceInline(from: dictionary, referenceTitles: referenceTitles)
+                    let reference = renderReferenceInline(from: dictionary, references: references, mode: mode)
                     return reference.isEmpty ? [] : [reference]
+                case "link":
+                    let text = (valueForKey("text", in: dictionary) as? String)
+                        ?? (valueForKey("title", in: dictionary) as? String)
+                    let destination = valueForKey("destination", in: dictionary) as? String
+                    if mode == .display, let text, let destination {
+                        let normalized = normalizeInlineText(text)
+                        return shouldKeep(normalized) ? ["[\(normalized)](\(destination))"] : []
+                    }
+                    if let text {
+                        let normalized = normalizeInlineText(text)
+                        return shouldKeep(normalized) ? [normalized] : []
+                    }
+                    return []
                 default:
                     break
                 }
             }
 
             if let inline = valueForKey("inlineContent", in: dictionary) {
-                return renderInlineFragments(from: inline, referenceTitles: referenceTitles)
+                return renderInlineFragments(from: inline, references: references, mode: mode)
             }
 
             if let text = valueForKey("text", in: dictionary) as? String {
@@ -2990,7 +3435,7 @@ enum ThirdPartyDocCTextExtractor {
             }
             return []
         case let array as [Any]:
-            return array.flatMap { renderInlineFragments(from: $0, referenceTitles: referenceTitles) }
+            return array.flatMap { renderInlineFragments(from: $0, references: references, mode: mode) }
         case let string as String:
             let normalized = normalizeInlineText(string)
             return shouldKeep(normalized) ? [normalized] : []
@@ -3001,22 +3446,23 @@ enum ThirdPartyDocCTextExtractor {
 
     private static func renderReferenceInline(
         from dictionary: [String: Any],
-        referenceTitles: [String: String]
+        references: [String: ReferenceInfo],
+        mode: RenderMode
     ) -> String {
-        if let literal = valueForKey("text", in: dictionary) as? String {
-            let normalized = normalizeInlineText(literal)
-            return shouldKeep(normalized) ? normalized : ""
-        }
-
-        guard let identifier = valueForKey("identifier", in: dictionary) as? String else {
-            return ""
-        }
-
-        let fallback = identifier.split(separator: "/").last.map(String.init)
-        let rawTitle = referenceTitles[identifier] ?? fallback ?? ""
+        let literalTitle = (valueForKey("text", in: dictionary) as? String).map(normalizeInlineText)
+        let identifier = valueForKey("identifier", in: dictionary) as? String
+        let info = identifier.flatMap { references[$0] }
+        let fallback = identifier?.split(separator: "/").last.map(String.init)
+        let rawTitle = literalTitle ?? info?.title ?? fallback ?? ""
         let normalized = normalizeInlineText(rawTitle)
         guard shouldKeep(normalized) else {
             return ""
+        }
+
+        if mode == .display,
+           let identifier,
+           let destination = info?.url ?? documentationURL(from: identifier) {
+            return "[\(normalized)](\(destination))"
         }
 
         if shouldRenderAsInlineCode(normalized) {
@@ -3025,29 +3471,259 @@ enum ThirdPartyDocCTextExtractor {
         return normalized
     }
 
-    private static func referenceTitlesLookup(from jsonObject: Any) -> [String: String] {
+    private static func referencesLookup(from jsonObject: Any) -> [String: ReferenceInfo] {
         guard let root = jsonObject as? [String: Any],
               let references = valueForKey("references", in: root) as? [String: Any] else {
             return [:]
         }
 
-        var titles: [String: String] = [:]
-        titles.reserveCapacity(references.count)
+        var infos: [String: ReferenceInfo] = [:]
+        infos.reserveCapacity(references.count)
 
         for (identifier, value) in references {
-            guard let reference = value as? [String: Any],
-                  let title = valueForKey("title", in: reference) as? String else {
+            guard let reference = value as? [String: Any] else {
                 continue
             }
 
+            let fallbackTitle = identifier
+                .split(separator: "/")
+                .last
+                .map(String.init) ?? identifier
+            let title = (valueForKey("title", in: reference) as? String) ?? fallbackTitle
             let normalized = normalizeInlineText(title)
             guard shouldKeep(normalized) else {
                 continue
             }
-            titles[identifier] = normalized
+            infos[identifier] = ReferenceInfo(
+                title: normalized,
+                url: resolveReferenceURL(from: reference, identifier: identifier)
+            )
         }
 
-        return titles
+        return infos
+    }
+
+    private static func documentationURL(from identifier: String) -> String? {
+        guard identifier.hasPrefix("doc://") else {
+            return nil
+        }
+        let stripped = identifier.replacingOccurrences(of: "doc://", with: "")
+
+        if let range = stripped.range(of: "/documentation/") {
+            let path = String(stripped[range.upperBound...])
+            return "https://developer.apple.com/documentation/\(path)"
+        }
+        if let range = stripped.range(of: "/tutorials/") {
+            let path = String(stripped[range.upperBound...])
+            return "https://developer.apple.com/tutorials/\(path)"
+        }
+        return nil
+    }
+
+    private static func resolveReferenceURL(
+        from reference: [String: Any],
+        identifier: String
+    ) -> String? {
+        if let url = valueForKey("url", in: reference) as? String {
+            if url.hasPrefix("http://") || url.hasPrefix("https://") {
+                return url
+            }
+            if url.hasPrefix("/") {
+                return "https://developer.apple.com\(url)"
+            }
+            return url
+        }
+        return documentationURL(from: identifier)
+    }
+
+    private static func renderIdentifier(
+        _ identifier: String,
+        references: [String: ReferenceInfo],
+        mode: RenderMode
+    ) -> String {
+        let normalizedIdentifier = normalizeInlineText(identifier)
+        if let info = references[normalizedIdentifier] {
+            if mode == .display, let url = info.url ?? documentationURL(from: normalizedIdentifier) {
+                return "[\(info.title)](\(url))"
+            }
+            return info.title
+        }
+
+        if mode == .display, let url = documentationURL(from: normalizedIdentifier) {
+            let fallback = normalizedIdentifier.split(separator: "/").last.map(String.init) ?? normalizedIdentifier
+            return "[\(fallback)](\(url))"
+        }
+
+        return normalizedIdentifier
+    }
+
+    private static func renderList(
+        from dictionary: [String: Any],
+        ordered: Bool,
+        references: [String: ReferenceInfo],
+        mode: RenderMode
+    ) -> [String] {
+        guard let items = valueForKey("items", in: dictionary) as? [Any] else {
+            return []
+        }
+
+        var rendered: [String] = []
+        for (index, item) in items.enumerated() {
+            if let itemDict = item as? [String: Any] {
+                rendered.append(contentsOf: renderListItem(
+                    from: itemDict,
+                    ordered: ordered,
+                    index: index + 1,
+                    references: references,
+                    mode: mode
+                ))
+            } else if let string = item as? String {
+                let normalized = normalizeInlineText(string)
+                guard shouldKeep(normalized) else { continue }
+                if mode == .display {
+                    rendered.append(ordered ? "\(index + 1). \(normalized)" : "- \(normalized)")
+                } else {
+                    rendered.append(normalized)
+                }
+            }
+        }
+        return rendered
+    }
+
+    private static func renderListItem(
+        from dictionary: [String: Any],
+        ordered: Bool,
+        index: Int?,
+        references: [String: ReferenceInfo],
+        mode: RenderMode
+    ) -> [String] {
+        let source = valueForKey("content", in: dictionary)
+            ?? valueForKey("inlineContent", in: dictionary)
+            ?? valueForKey("text", in: dictionary)
+
+        guard let source else {
+            return []
+        }
+
+        var itemText = renderInline(from: source, references: references, mode: mode)
+        if itemText.isEmpty {
+            let nested = renderBlocks(from: source, currentKey: nil, references: references, mode: mode)
+            itemText = nested.joined(separator: " ")
+        }
+        let normalized = cleanInlineSpacing(itemText)
+        guard shouldKeep(normalized) else {
+            return []
+        }
+
+        if mode == .display {
+            let prefix: String
+            if ordered, let index {
+                prefix = "\(index). "
+            } else {
+                prefix = "- "
+            }
+            return [prefix + normalized]
+        }
+        return [normalized]
+    }
+
+    private static func isSectionItemArray(currentKey: String?, array: [Any]) -> Bool {
+        guard let currentKey else { return false }
+        let keys: Set<String> = ["chapters", "resources", "sections", "topicsections", "seealsosections", "tiles"]
+        guard keys.contains(currentKey.lowercased()) else { return false }
+        return array.allSatisfy { $0 is [String: Any] }
+    }
+
+    private static func renderSectionItems(
+        from array: [Any],
+        references: [String: ReferenceInfo]
+    ) -> [String] {
+        var blocks: [String] = []
+
+        for value in array {
+            guard let dictionary = value as? [String: Any] else { continue }
+            let headingSource = (valueForKey("title", in: dictionary) as? String)
+                ?? (valueForKey("name", in: dictionary) as? String)
+            if let headingSource {
+                let normalizedTitle = normalizeInlineText(headingSource)
+                if shouldKeep(normalizedTitle) {
+                    blocks.append("### \(normalizedTitle)")
+                }
+            }
+
+            if let abstract = valueForKey("abstract", in: dictionary) {
+                let rendered = renderInline(from: abstract, references: references, mode: .display)
+                if shouldKeep(rendered) {
+                    blocks.append(rendered)
+                }
+            }
+
+            if let content = valueForKey("content", in: dictionary) {
+                blocks.append(contentsOf: renderBlocks(
+                    from: content,
+                    currentKey: "content",
+                    references: references,
+                    mode: .display
+                ))
+            }
+
+            if let action = valueForKey("action", in: dictionary) as? [String: Any] {
+                let actionLabel = (valueForKey("overridingTitle", in: action) as? String)
+                    ?? (valueForKey("title", in: action) as? String)
+                let normalizedLabel = actionLabel.map(normalizeInlineText)
+                if let destination = valueForKey("destination", in: action) as? String,
+                   let normalizedLabel,
+                   shouldKeep(normalizedLabel) {
+                    blocks.append("- [\(normalizedLabel)](\(destination))")
+                } else if let identifier = valueForKey("identifier", in: action) as? String {
+                    let rendered = renderIdentifier(identifier, references: references, mode: .display)
+                    if shouldKeep(rendered) {
+                        blocks.append("- \(rendered)")
+                    }
+                }
+            }
+
+            for key in ["identifiers", "tutorials"] {
+                if let entries = valueForKey(key, in: dictionary) as? [Any], !entries.isEmpty {
+                    for entry in entries {
+                        if let string = entry as? String {
+                            let rendered = renderIdentifier(string, references: references, mode: .display)
+                            if shouldKeep(rendered) {
+                                blocks.append("- \(rendered)")
+                            }
+                        }
+                    }
+                }
+            }
+
+            for key in ["chapters", "resources", "tiles", "items"] {
+                guard let nested = valueForKey(key, in: dictionary) else {
+                    continue
+                }
+                blocks.append(contentsOf: renderBlocks(
+                    from: nested,
+                    currentKey: key,
+                    references: references,
+                    mode: .display
+                ))
+            }
+        }
+
+        return blocks
+    }
+
+    private static func shouldRenderSectionHeading(for key: String?) -> Bool {
+        guard let key else { return false }
+        let keys: Set<String> = [
+            "topicsections",
+            "seealsosections",
+            "relationshipssections",
+            "sections",
+            "chapters",
+            "resources",
+            "tutorials",
+        ]
+        return keys.contains(key.lowercased())
     }
 
     private static func valueForKey(_ key: String, in dictionary: [String: Any]) -> Any? {
