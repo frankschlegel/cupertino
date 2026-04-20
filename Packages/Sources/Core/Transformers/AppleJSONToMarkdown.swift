@@ -49,14 +49,14 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
 
         // Abstract
         if !doc.abstract.isEmpty {
-            markdown += renderInlineContent(doc.abstract)
+            markdown += renderInlineContent(doc.abstract, references: doc.references)
             markdown += "\n\n"
         }
 
         // Primary content sections (declarations, parameters, return values, etc.)
         if let sections = doc.primaryContentSections {
             for section in sections {
-                markdown += renderPrimaryContentSection(section)
+                markdown += renderPrimaryContentSection(section, references: doc.references)
             }
         }
 
@@ -147,7 +147,10 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
 
     // MARK: - Private Rendering Methods
 
-    private static func renderInlineContent(_ content: [InlineContent]) -> String {
+    private static func renderInlineContent(
+        _ content: [InlineContent],
+        references: [String: Reference]? = nil
+    ) -> String {
         content.map { item -> String in
             switch item.type {
             case "text":
@@ -156,18 +159,21 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
                 return "`\(item.code ?? "")`"
             case "reference":
                 if let identifier = item.identifier {
-                    let title = item.title ?? identifier
-                    return "[\(title)]"
+                    let title = item.title ?? references?[identifier]?.title ?? identifier
+                    if let destination = referenceURL(identifier: identifier, references: references) {
+                        return "[\(title)](\(destination.absoluteString))"
+                    }
+                    return title
                 }
                 return ""
             case "emphasis":
                 if let inlineContent = item.inlineContent {
-                    return "*\(renderInlineContent(inlineContent))*"
+                    return "*\(renderInlineContent(inlineContent, references: references))*"
                 }
                 return ""
             case "strong":
                 if let inlineContent = item.inlineContent {
-                    return "**\(renderInlineContent(inlineContent))**"
+                    return "**\(renderInlineContent(inlineContent, references: references))**"
                 }
                 return ""
             default:
@@ -176,7 +182,10 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
         }.joined()
     }
 
-    private static func renderPrimaryContentSection(_ section: PrimaryContentSection) -> String {
+    private static func renderPrimaryContentSection(
+        _ section: PrimaryContentSection,
+        references: [String: Reference]?
+    ) -> String {
         var result = ""
 
         switch section.kind {
@@ -198,7 +207,7 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
                 for param in parameters {
                     result += "- **\(param.name)**: "
                     if let content = param.content {
-                        result += renderContentBlocks(content)
+                        result += renderContentBlocks(content, references: references)
                     }
                     result += "\n"
                 }
@@ -207,7 +216,7 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
 
         case "content":
             if let content = section.content {
-                result += renderContentBlocks(content)
+                result += renderContentBlocks(content, references: references)
                 result += "\n\n"
             }
 
@@ -218,12 +227,15 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
         return result
     }
 
-    private static func renderContentBlocks(_ blocks: [ContentBlock]) -> String {
+    private static func renderContentBlocks(
+        _ blocks: [ContentBlock],
+        references: [String: Reference]?
+    ) -> String {
         blocks.map { block -> String in
             switch block.type {
             case "paragraph":
                 if let inlineContent = block.inlineContent {
-                    return renderInlineContent(inlineContent)
+                    return renderInlineContent(inlineContent, references: references)
                 }
                 return ""
 
@@ -243,7 +255,7 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
                 if let items = block.items {
                     return items.map { item -> String in
                         if let content = item.content {
-                            return "- " + renderContentBlocks(content)
+                            return "- " + renderContentBlocks(content, references: references)
                         }
                         return ""
                     }.joined(separator: "\n")
@@ -254,7 +266,7 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
                 if let items = block.items {
                     return items.enumerated().map { index, item -> String in
                         if let content = item.content {
-                            return "\(index + 1). " + renderContentBlocks(content)
+                            return "\(index + 1). " + renderContentBlocks(content, references: references)
                         }
                         return ""
                     }.joined(separator: "\n")
@@ -284,8 +296,12 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
         for identifier in section.identifiers {
             if let ref = references?[identifier] {
                 let title = ref.title ?? identifier
-                let abstract = ref.abstract.map { renderInlineContent($0) } ?? ""
-                result += "- **\(title)**"
+                let abstract = ref.abstract.map { renderInlineContent($0, references: references) } ?? ""
+                if let destination = referenceURL(identifier: identifier, references: references) {
+                    result += "- **[\(title)](\(destination.absoluteString))**"
+                } else {
+                    result += "- **\(title)**"
+                }
                 if !abstract.isEmpty {
                     result += ": \(abstract)"
                 }
@@ -293,7 +309,11 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
             } else {
                 // Just show the identifier if no reference found
                 let shortName = identifier.components(separatedBy: "/").last ?? identifier
-                result += "- \(shortName)\n"
+                if let destination = referenceURL(identifier: identifier, references: references) {
+                    result += "- [\(shortName)](\(destination.absoluteString))\n"
+                } else {
+                    result += "- \(shortName)\n"
+                }
             }
         }
 
@@ -309,10 +329,19 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
 
         for identifier in section.identifiers {
             if let ref = references?[identifier] {
-                result += "- \(ref.title ?? identifier)\n"
+                let title = ref.title ?? identifier
+                if let destination = referenceURL(identifier: identifier, references: references) {
+                    result += "- [\(title)](\(destination.absoluteString))\n"
+                } else {
+                    result += "- \(title)\n"
+                }
             } else {
                 let shortName = identifier.components(separatedBy: "/").last ?? identifier
-                result += "- \(shortName)\n"
+                if let destination = referenceURL(identifier: identifier, references: references) {
+                    result += "- [\(shortName)](\(destination.absoluteString))\n"
+                } else {
+                    result += "- \(shortName)\n"
+                }
             }
         }
 
@@ -321,18 +350,39 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
     }
 
     private static func documentationURLFromIdentifier(_ identifier: String) -> URL? {
-        // Identifier format: doc://com.apple.SwiftUI/documentation/SwiftUI/View
-        // Output: https://developer.apple.com/documentation/SwiftUI/View
+        // Supported identifiers:
+        // - doc://.../documentation/SwiftUI/View -> https://developer.apple.com/documentation/SwiftUI/View
+        // - doc://.../tutorials/swiftui/landmarks -> https://developer.apple.com/tutorials/swiftui/landmarks
         guard identifier.hasPrefix("doc://") else { return nil }
 
-        let components = identifier
-            .replacingOccurrences(of: "doc://", with: "")
-            .components(separatedBy: "/documentation/")
+        let stripped = identifier.replacingOccurrences(of: "doc://", with: "")
+        if let range = stripped.range(of: "/documentation/") {
+            let path = String(stripped[range.upperBound...])
+            return URL(string: "https://developer.apple.com/documentation/\(path)")
+        }
+        if let range = stripped.range(of: "/tutorials/") {
+            let path = String(stripped[range.upperBound...])
+            return URL(string: "https://developer.apple.com/tutorials/\(path)")
+        }
+        return nil
+    }
 
-        guard components.count == 2 else { return nil }
-
-        let path = components[1]
-        return URL(string: "https://developer.apple.com/documentation/\(path)")
+    private static func referenceURL(
+        identifier: String,
+        references: [String: Reference]?
+    ) -> URL? {
+        if let rawURL = references?[identifier]?.url {
+            if rawURL.hasPrefix("http://") || rawURL.hasPrefix("https://") {
+                return URL(string: rawURL)
+            }
+            if rawURL.hasPrefix("/") {
+                return URL(string: "https://developer.apple.com\(rawURL)")
+            }
+        }
+        if identifier.hasPrefix("http://") || identifier.hasPrefix("https://") {
+            return URL(string: identifier)
+        }
+        return documentationURLFromIdentifier(identifier)
     }
 }
 
@@ -446,7 +496,7 @@ extension AppleJSONToMarkdown {
         let kind = parseKind(from: doc.metadata.roleHeading, role: doc.metadata.role)
 
         // Extract abstract
-        let abstract = doc.abstract.isEmpty ? nil : renderInlineContent(doc.abstract)
+        let abstract = doc.abstract.isEmpty ? nil : renderInlineContent(doc.abstract, references: doc.references)
 
         // Extract declaration
         let declaration = extractDeclaration(from: doc.primaryContentSections)
@@ -660,8 +710,8 @@ extension AppleJSONToMarkdown {
         let items = section.identifiers.compactMap { identifier -> StructuredDocumentationPage.Section.Item? in
             let ref = references?[identifier]
             let name = ref?.title ?? identifier.components(separatedBy: "/").last ?? identifier
-            let description = ref?.abstract.map { renderInlineContent($0) }
-            let itemURL = documentationURLFromIdentifier(identifier)
+            let description = ref?.abstract.map { renderInlineContent($0, references: references) }
+            let itemURL = referenceURL(identifier: identifier, references: references)
             return StructuredDocumentationPage.Section.Item(
                 name: name,
                 description: description,
