@@ -57,13 +57,15 @@ struct CommandRegistrationTests {
         #expect(config.abstract.contains("MCP"))
     }
 
-    @Test("Package command group registers add, update, and remove")
+    @Test("Package command group registers add, update, remove, and list")
     func packageCommandSubcommandsRegistered() {
         let packageConfig = PackageCommand.configuration
-        #expect(packageConfig.subcommands.count == 3)
+        #expect(packageConfig.subcommands.count == 4)
         #expect(packageConfig.subcommands.contains { $0 == AddCommand.self })
         #expect(packageConfig.subcommands.contains { $0 == UpdateCommand.self })
         #expect(packageConfig.subcommands.contains { $0 == RemoveCommand.self })
+        #expect(packageConfig.subcommands.contains { $0 == ListPackageCommand.self })
+        #expect(packageConfig.defaultSubcommand == ListPackageCommand.self)
     }
 
     @Test("Package remove command discussion includes package-name selector support")
@@ -81,6 +83,8 @@ struct CommandRegistrationTests {
 struct CommandParsingTests {
     @Test("Package lifecycle commands parse at root")
     func packageLifecycleCommandsParseAtRoot() throws {
+        _ = try Cupertino.parseAsRoot(["package"])
+        _ = try Cupertino.parseAsRoot(["package", "list"])
         _ = try Cupertino.parseAsRoot(["package", "add", "pointfreeco/swift-composable-architecture"])
         _ = try Cupertino.parseAsRoot(["package", "update", "pointfreeco/swift-composable-architecture"])
         _ = try Cupertino.parseAsRoot(["package", "remove", "pointfreeco/swift-composable-architecture"])
@@ -89,6 +93,7 @@ struct CommandParsingTests {
     @Test("Legacy top-level lifecycle commands are rejected")
     func legacyTopLevelLifecycleCommandsRejected() {
         let legacyCommands = [
+            ["list"],
             ["add", "pointfreeco/swift-composable-architecture"],
             ["update", "pointfreeco/swift-composable-architecture"],
             ["remove", "pointfreeco/swift-composable-architecture"],

@@ -11,6 +11,8 @@ struct PackageCommand: AsyncParsableCommand {
             AddCommand.self,
             UpdateCommand.self,
             RemoveCommand.self,
-        ]
+            ListPackageCommand.self,
+        ],
+        defaultSubcommand: ListPackageCommand.self
     )
 }

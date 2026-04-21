@@ -75,7 +75,7 @@ The FTS5 index supports:
 
 - **Remote mode** (`--remote`): No prerequisites - streams from GitHub
 - **Local mode**: Requires crawled documentation (run `cupertino fetch` first)
-- Third-party package docs are managed via `cupertino package add|update|remove` in `~/.cupertino/third-party/`
+- Third-party package docs are managed via `cupertino package add|update|remove|list` in `~/.cupertino/third-party/`
 - Uses SQLite FTS5 for optimal search performance
 - Index size is typically ~10-20% of total documentation size
 - Remote mode is resumable if interrupted

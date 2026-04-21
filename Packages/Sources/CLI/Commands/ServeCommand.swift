@@ -173,7 +173,7 @@ struct ServeCommand: AsyncParsableCommand {
             let infoMsg = "ℹ️  \(description.capitalized) search index not found at: \(searchDBURL.path)"
             let hintMsg: String
             if description == "third-party index" {
-                let cmd = "\(Shared.Constants.App.commandName) add <source>"
+                let cmd = "\(Shared.Constants.App.commandName) package add <source>"
                 hintMsg = "   Third-party package results will be skipped. Run '\(cmd)' to add third-party docs."
             } else {
                 let cmd = "\(Shared.Constants.App.commandName) save"

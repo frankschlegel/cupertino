@@ -1328,6 +1328,134 @@ struct ThirdPartyTests {
         let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
         #expect(installsAfterRemove.isEmpty)
     }
+
+    @Test("List returns empty results when manifest is missing or empty")
+    func listReturnsEmptyForMissingOrEmptyManifest() throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        let manager = ThirdPartyManager(storeURL: storeDir)
+
+        let missingManifestList = try manager.listInstalledSources()
+        #expect(missingManifestList.isEmpty)
+
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        try Self.writeManifest(to: storeDir, installs: [])
+
+        let emptyManifestList = try manager.listInstalledSources()
+        #expect(emptyManifestList.isEmpty)
+    }
+
+    @Test("List returns provenance sorted by identity key")
+    func listSortedByIdentityKey() throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        let now = Date()
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "z-src",
+                    identityKey: "github:zeta/zed",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/zeta/zed@2.0.0",
+                    displaySource: "https://github.com/zeta/zed",
+                    provenance: "zeta/zed@2.0.0",
+                    framework: "zed",
+                    uriPrefix: "packages://third-party/z-src/",
+                    projectPrefix: "tp-z-src-",
+                    reference: "2.0.0",
+                    localPath: nil,
+                    owner: "zeta",
+                    repo: "zed",
+                    snapshotHash: "zzzz",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+                .init(
+                    id: "a-src",
+                    identityKey: "github:alpha/app",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/alpha/app@1.0.0",
+                    displaySource: "https://github.com/alpha/app",
+                    provenance: "alpha/app@1.0.0",
+                    framework: "app",
+                    uriPrefix: "packages://third-party/a-src/",
+                    projectPrefix: "tp-a-src-",
+                    reference: "1.0.0",
+                    localPath: nil,
+                    owner: "alpha",
+                    repo: "app",
+                    snapshotHash: "aaaa",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+            ]
+        )
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let installs = try manager.listInstalledSources()
+
+        #expect(installs.map(\.identityKey) == ["github:alpha/app", "github:zeta/zed"])
+        #expect(installs.map(\.provenance) == ["alpha/app@1.0.0", "zeta/zed@2.0.0"])
+    }
+
+    @Test("List does not mutate manifest contents")
+    func listDoesNotMutateManifest() throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        let now = Date()
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "stable-src",
+                    identityKey: "github:stable/lib",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/stable/lib@1.2.3",
+                    displaySource: "https://github.com/stable/lib",
+                    provenance: "stable/lib@1.2.3",
+                    framework: "lib",
+                    uriPrefix: "packages://third-party/stable-src/",
+                    projectPrefix: "tp-stable-src-",
+                    reference: "1.2.3",
+                    localPath: nil,
+                    owner: "stable",
+                    repo: "lib",
+                    snapshotHash: "stablehash",
+                    docsIndexed: 7,
+                    sampleProjectsIndexed: 2,
+                    sampleFilesIndexed: 11,
+                    installedAt: now,
+                    updatedAt: now
+                )
+            ]
+        )
+
+        let manifestURL = storeDir.appendingPathComponent("manifest.json")
+        let beforeData = try Data(contentsOf: manifestURL)
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        _ = try manager.listInstalledSources()
+
+        let afterData = try Data(contentsOf: manifestURL)
+        #expect(beforeData == afterData)
+    }
 }
 
 // MARK: - Test Helpers

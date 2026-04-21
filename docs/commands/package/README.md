@@ -8,6 +8,8 @@ Manage third-party package documentation in the separate package index.
 cupertino package <subcommand> [options]
 ```
 
+Running `cupertino package` without a subcommand defaults to `cupertino package list`.
+
 ## Subcommands
 
 | Subcommand | Description |
@@ -15,6 +17,7 @@ cupertino package <subcommand> [options]
 | `add <source>` | Add third-party package docs to the separate package index |
 | `update <source>` | Update an installed third-party package source |
 | `remove <source>` | Remove an installed third-party package source |
+| `list` | List installed third-party package sources (provenance per line) |
 
 ## Examples
 
@@ -32,6 +35,12 @@ cupertino package update pointfreeco/swift-composable-architecture
 
 # Remove an installed source
 cupertino package remove pointfreeco/swift-composable-architecture
+
+# List installed sources
+cupertino package list
+
+# Equivalent shortcut (default subcommand)
+cupertino package
 ```
 
 ## Source Formats

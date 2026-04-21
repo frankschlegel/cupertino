@@ -61,7 +61,7 @@ Filter results to a specific documentation source.
 - `"apple-archive"` - Apple Archive legacy programming guides
 
 For `source: "packages"`:
-- Third-party docs from the separate package index (`cupertino package add|update|remove`) are included
+- Third-party docs from the separate package index (`cupertino package add|update|remove|list`) are included
 - API-doc records are ranked ahead of metadata-style records
 - Results include provenance in `owner/repo@ref` form when available
 

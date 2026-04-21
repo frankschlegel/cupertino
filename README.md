@@ -128,6 +128,12 @@ cupertino package update swift-composable-architecture
 # Remove an installed source
 cupertino package remove swift-composable-architecture
 
+# List installed sources (one provenance per line)
+cupertino package list
+
+# Equivalent shortcut (default subcommand)
+cupertino package
+
 # Search package docs only
 cupertino search "Reducer" --source packages
 ```
@@ -469,7 +475,7 @@ A UIKit view controller that manages a SwiftUI view hierarchy.
 
 - **Swift Package Documentation & Metadata**
   - Bundled package catalog metadata
-  - Third-party package docs via `cupertino package add|update|remove`
+  - Third-party package docs via `cupertino package add|update|remove|list`
 
 - **Apple Sample Code** (606 projects)
   - Two fetch methods: GitHub (recommended) or Apple website

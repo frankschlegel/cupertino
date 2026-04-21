@@ -132,6 +132,18 @@ struct ThirdPartyManager {
         )
     }
 
+    func listInstalledSources() throws -> [ThirdPartyListedSource] {
+        let manifest = try loadManifest()
+        return manifest.installs
+            .sorted { $0.identityKey < $1.identityKey }
+            .map {
+                ThirdPartyListedSource(
+                    identityKey: $0.identityKey,
+                    provenance: $0.provenance
+                )
+            }
+    }
+
     // MARK: - Upsert
 
     private enum UpsertMode {
@@ -2842,6 +2854,11 @@ struct ThirdPartyRemovalResult: Sendable {
     let provenance: String
     let deletedDocs: Int
     let deletedProjects: Int
+}
+
+struct ThirdPartyListedSource: Sendable {
+    let identityKey: String
+    let provenance: String
 }
 
 private struct ThirdPartyManifest: Codable {

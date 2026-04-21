@@ -52,6 +52,7 @@ cupertino search "Observable" --min-ios 17.0  # Filter by iOS version
 cupertino package add swift-composable-architecture
 cupertino package update pointfreeco/swift-composable-architecture
 cupertino package remove pointfreeco/swift-composable-architecture
+cupertino package list
 
 # Read full document
 cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format markdown
