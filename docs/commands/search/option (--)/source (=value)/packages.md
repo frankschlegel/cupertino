@@ -12,7 +12,7 @@ cupertino search <query> --source packages
 
 Filters search results to package-related content:
 
-- Third-party package docs ingested with `cupertino add`
+- Third-party package docs ingested with `cupertino package add`
 - Bundled package catalog metadata
 
 When both appear, API documentation records are ranked ahead of metadata-style records.
@@ -37,21 +37,21 @@ Bundled package catalog data is indexed by `cupertino save`.
 Third-party docs are managed independently in a separate third-party package index:
 
 ```bash
-cupertino add swift-composable-architecture
-cupertino add pointfreeco/swift-composable-architecture
-cupertino add https://github.com/pointfreeco/swift-composable-architecture
-cupertino add https://github.com/pointfreeco/swift-composable-architecture@1.25.5
-cupertino update pointfreeco/swift-composable-architecture
-cupertino remove pointfreeco/swift-composable-architecture
+cupertino package add swift-composable-architecture
+cupertino package add pointfreeco/swift-composable-architecture
+cupertino package add https://github.com/pointfreeco/swift-composable-architecture
+cupertino package add https://github.com/pointfreeco/swift-composable-architecture@1.25.5
+cupertino package update pointfreeco/swift-composable-architecture
+cupertino package remove pointfreeco/swift-composable-architecture
 ```
 
-`add`/`update` accept an optional `@ref`. If omitted:
+`package add`/`package update` accept an optional `@ref`. If omitted:
 
 - Interactive mode prompts for package disambiguation and reference selection
 - Non-interactive mode fails on ambiguous package names
 - Non-interactive mode defaults to latest stable release, then latest tag
 - Non-interactive mode fails if no release/tag can be resolved
-- `update` offers to run `add` interactively when the source is not installed
+- `package update` offers to run `package add` interactively when the source is not installed
 
 ## Notes
 

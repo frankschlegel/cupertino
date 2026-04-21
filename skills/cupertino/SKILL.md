@@ -51,25 +51,25 @@ Ingest and maintain third-party package docs so they appear in `--source package
 
 Add docs:
 ```bash
-cupertino add swift-composable-architecture
-cupertino add pointfreeco/swift-composable-architecture
-cupertino add https://github.com/pointfreeco/swift-composable-architecture
-cupertino add pointfreeco/swift-composable-architecture@1.25.5
+cupertino package add swift-composable-architecture
+cupertino package add pointfreeco/swift-composable-architecture
+cupertino package add https://github.com/pointfreeco/swift-composable-architecture
+cupertino package add pointfreeco/swift-composable-architecture@1.25.5
 ```
 
 Update/remove docs:
 ```bash
-cupertino update swift-composable-architecture
-cupertino remove swift-composable-architecture
+cupertino package update swift-composable-architecture
+cupertino package remove swift-composable-architecture
 ```
 
 For agent/non-interactive execution, prefer:
 ```bash
-cupertino add pointfreeco/swift-composable-architecture --non-interactive --allow-build
-cupertino update pointfreeco/swift-composable-architecture --non-interactive --allow-build
+cupertino package add pointfreeco/swift-composable-architecture --non-interactive --allow-build
+cupertino package update pointfreeco/swift-composable-architecture --non-interactive --allow-build
 ```
 
-Accepted `add`/`update` source formats:
+Accepted `package add`/`package update` source formats:
 - Local directory path
 - GitHub URL
 - `owner/repo`
@@ -83,15 +83,15 @@ Ref resolution behavior:
 ### Proactive Suggestion Guidance
 When appropriate, proactively suggest adding third-party package docs.
 
-Suggest `cupertino add <package>` if:
+Suggest `cupertino package add <package>` if:
 - The user is asking about APIs from a known external package (e.g. TCA, Alamofire, NIO).
 - `--source packages` results are sparse/irrelevant for package-specific queries.
 - The project setup clearly depends on packages not yet indexed in Cupertino.
 
 Example suggestions:
 ```bash
-cupertino add swift-composable-architecture
-cupertino add pointfreeco/swift-composable-architecture --non-interactive --allow-build
+cupertino package add swift-composable-architecture
+cupertino package add pointfreeco/swift-composable-architecture --non-interactive --allow-build
 ```
 
 Do not suggest this when:

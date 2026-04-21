@@ -15,14 +15,12 @@ struct CommandRegistrationTests {
     func subcommandsRegistered() {
         let config = Cupertino.configuration
 
-        #expect(config.subcommands.count == 16)
+        #expect(config.subcommands.count == 14)
         #expect(config.subcommands.contains { $0 == SetupCommand.self })
         #expect(config.subcommands.contains { $0 == FetchCommand.self })
         #expect(config.subcommands.contains { $0 == SaveCommand.self })
         #expect(config.subcommands.contains { $0 == IndexCommand.self })
-        #expect(config.subcommands.contains { $0 == AddCommand.self })
-        #expect(config.subcommands.contains { $0 == UpdateCommand.self })
-        #expect(config.subcommands.contains { $0 == RemoveCommand.self })
+        #expect(config.subcommands.contains { $0 == PackageCommand.self })
         #expect(config.subcommands.contains { $0 == ServeCommand.self })
         #expect(config.subcommands.contains { $0 == SearchCommand.self })
         #expect(config.subcommands.contains { $0 == ReadCommand.self })
@@ -59,12 +57,51 @@ struct CommandRegistrationTests {
         #expect(config.abstract.contains("MCP"))
     }
 
-    @Test("Remove command discussion includes package-name selector support")
-    func removeCommandDiscussionIncludesPackageSelector() {
+    @Test("Package command group registers add, update, and remove")
+    func packageCommandSubcommandsRegistered() {
+        let packageConfig = PackageCommand.configuration
+        #expect(packageConfig.subcommands.count == 3)
+        #expect(packageConfig.subcommands.contains { $0 == AddCommand.self })
+        #expect(packageConfig.subcommands.contains { $0 == UpdateCommand.self })
+        #expect(packageConfig.subcommands.contains { $0 == RemoveCommand.self })
+    }
+
+    @Test("Package remove command discussion includes package-name selector support")
+    func packageRemoveCommandDiscussionIncludesPackageSelector() {
         let discussion = RemoveCommand.configuration.discussion
         #expect(discussion.contains("Package name"))
         #expect(discussion.contains("exact repo match preferred"))
         #expect(discussion.contains("unique fuzzy repo match"))
+    }
+}
+
+// MARK: - Command Parsing Tests
+
+@Suite("CLI Command Parsing")
+struct CommandParsingTests {
+    @Test("Package lifecycle commands parse at root")
+    func packageLifecycleCommandsParseAtRoot() throws {
+        _ = try Cupertino.parseAsRoot(["package", "add", "pointfreeco/swift-composable-architecture"])
+        _ = try Cupertino.parseAsRoot(["package", "update", "pointfreeco/swift-composable-architecture"])
+        _ = try Cupertino.parseAsRoot(["package", "remove", "pointfreeco/swift-composable-architecture"])
+    }
+
+    @Test("Legacy top-level lifecycle commands are rejected")
+    func legacyTopLevelLifecycleCommandsRejected() {
+        let legacyCommands = [
+            ["add", "pointfreeco/swift-composable-architecture"],
+            ["update", "pointfreeco/swift-composable-architecture"],
+            ["remove", "pointfreeco/swift-composable-architecture"],
+        ]
+
+        for arguments in legacyCommands {
+            do {
+                _ = try Cupertino.parseAsRoot(arguments)
+                Issue.record("Expected legacy command to fail parsing: \(arguments.joined(separator: " "))")
+            } catch {
+                // Expected: these commands no longer exist at the root.
+            }
+        }
     }
 }
 

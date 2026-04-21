@@ -13,6 +13,7 @@ CLI commands for the Cupertino documentation server.
 | [serve](serve/) | Start MCP server for AI agent access |
 | [search](search/) | Search documentation from the command line |
 | [read](read/) | Read full document content by URI |
+| [package](package/) | Manage third-party package docs in the separate package index |
 | [list-frameworks](list-frameworks/) | List available frameworks with document counts |
 | [list-samples](list-samples/) | List indexed Apple sample code projects |
 | [search-samples](search-samples/) | Search Apple sample code projects and files |
@@ -48,9 +49,9 @@ cupertino search "Core Animation" --include-archive
 cupertino search "Observable" --min-ios 17.0  # Filter by iOS version
 
 # Third-party package docs (separate index)
-cupertino add swift-composable-architecture
-cupertino update pointfreeco/swift-composable-architecture
-cupertino remove pointfreeco/swift-composable-architecture
+cupertino package add swift-composable-architecture
+cupertino package update pointfreeco/swift-composable-architecture
+cupertino package remove pointfreeco/swift-composable-architecture
 
 # Read full document
 cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format markdown

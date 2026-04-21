@@ -4056,7 +4056,7 @@ enum ThirdPartyManagerError: Error, LocalizedError {
         case let .invalidSource(message):
             return message
         case let .alreadyInstalledForAdd(source):
-            return "Third-party source '\(source)' is already installed. Run 'cupertino update \(source)' instead."
+            return "Third-party source '\(source)' is already installed. Run 'cupertino package update \(source)' instead."
         case let .packageNameNotFound(query):
             return "No package named '\(query)' was found. Provide owner/repo or a GitHub URL."
         case let .ambiguousPackageName(query, options):
@@ -4075,7 +4075,7 @@ enum ThirdPartyManagerError: Error, LocalizedError {
         case let .noResolvableReference(package):
             return "Unable to resolve a reference for '\(package)'. Use an explicit @ref or run interactively to enter one."
         case let .notInstalledForUpdate(identity):
-            return "No third-party source is installed for '\(identity)'. Run 'cupertino add \(identity)' or rerun update interactively to add it."
+            return "No third-party source is installed for '\(identity)'. Run 'cupertino package add \(identity)' or rerun update interactively to add it."
         case let .updateCancelled(source):
             return "Update aborted for '\(source)'."
         case let .noMatchingInstall(selector, installed):
