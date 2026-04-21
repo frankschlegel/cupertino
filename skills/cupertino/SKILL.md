@@ -63,6 +63,11 @@ cupertino package update swift-composable-architecture
 cupertino package remove swift-composable-architecture
 ```
 
+List installed sources:
+```bash
+cupertino package list
+```
+
 For agent/non-interactive execution, prefer:
 ```bash
 cupertino package add pointfreeco/swift-composable-architecture --non-interactive --allow-build
