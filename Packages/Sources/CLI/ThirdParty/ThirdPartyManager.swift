@@ -1874,6 +1874,9 @@ struct ThirdPartyManager {
         if let readme = try findRootReadme(in: rootURL) {
             discovered.insert(readme)
         }
+        for rootReleaseDocument in try findRootReleaseDocuments(in: rootURL) {
+            discovered.insert(rootReleaseDocument)
+        }
 
         for docsDirectory in try findDirectories(named: ["docs"], under: rootURL) {
             for markdownFile in try markdownFiles(in: docsDirectory) {
@@ -1893,6 +1896,39 @@ struct ThirdPartyManager {
             }
         }
         return nil
+    }
+
+    private func findRootReleaseDocuments(in rootURL: URL) throws -> [URL] {
+        let baseNames = Set(["CHANGELOG", "RELEASE_NOTES"])
+        let allowedExtensions = Set(["", "md", "markdown"])
+
+        var results: [URL] = []
+        let rootContents = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        for fileURL in rootContents {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else {
+                continue
+            }
+
+            let baseName = fileURL.deletingPathExtension().lastPathComponent.uppercased()
+            guard baseNames.contains(baseName) else {
+                continue
+            }
+
+            let pathExtension = fileURL.pathExtension.lowercased()
+            guard allowedExtensions.contains(pathExtension) else {
+                continue
+            }
+
+            results.append(fileURL)
+        }
+
+        return results.sorted { $0.path < $1.path }
     }
 
     private func discoverSampleRoots(in rootURL: URL) throws -> [URL] {

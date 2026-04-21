@@ -606,6 +606,75 @@ struct ThirdPartyTests {
         #expect(updated.provenance != firstAdd.provenance)
     }
 
+    @Test("Fallback markdown discovery indexes root changelog and release-note variants")
+    func indexesRootReleaseDocuments() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let sourceDir = testDir.appendingPathComponent("release-source")
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try Self.makeLocalFixture(at: sourceDir, marker: "release")
+
+        try """
+        # CHANGELOG
+
+        root-changelog-marker
+        """
+        .write(to: sourceDir.appendingPathComponent("CHANGELOG"), atomically: true, encoding: .utf8)
+
+        try """
+        # Release Notes
+
+        root-release-notes-marker
+        """
+        .write(to: sourceDir.appendingPathComponent("RELEASE_NOTES.md"), atomically: true, encoding: .utf8)
+
+        try """
+        # Changelog (Docs)
+
+        docs-changelog-unique-token
+        """
+        .write(to: sourceDir.appendingPathComponent("docs/changelog.md"), atomically: true, encoding: .utf8)
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let result = try await manager.add(sourceInput: sourceDir.path, buildOptions: .disabled)
+        #expect(result.docsIndexed >= 5)
+
+        let searchIndex = try await Search.Index(dbPath: storeDir.appendingPathComponent("search.db"))
+
+        let changelogResult = try #require(
+            try await searchIndex.search(
+                query: "root-changelog-marker",
+                source: Shared.Constants.SourcePrefix.packages,
+                framework: nil,
+                limit: 5
+            ).first
+        )
+        #expect(changelogResult.uri.lowercased().contains("/docs/changelog"))
+
+        let releaseNotesResult = try #require(
+            try await searchIndex.search(
+                query: "root-release-notes-marker",
+                source: Shared.Constants.SourcePrefix.packages,
+                framework: nil,
+                limit: 5
+            ).first
+        )
+        #expect(releaseNotesResult.uri.lowercased().contains("/docs/release_notes"))
+
+        let docsChangelogResult = try #require(
+            try await searchIndex.search(
+                query: "docs-changelog-unique-token",
+                source: Shared.Constants.SourcePrefix.packages,
+                framework: nil,
+                limit: 5
+            ).first
+        )
+        #expect(docsChangelogResult.uri.lowercased().contains("/docs/docs/changelog"))
+
+        await searchIndex.disconnect()
+    }
+
     @Test("Automatic DocC build requires --allow-build when non-interactive")
     func nonInteractiveBuildGate() async throws {
         let testDir = Self.testDirectory()
