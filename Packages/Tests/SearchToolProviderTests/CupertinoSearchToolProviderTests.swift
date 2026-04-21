@@ -1096,6 +1096,108 @@ struct ThirdPartyOverlayIntegrationTests {
         await index.disconnect()
     }
 
+    @Test("Packages search slightly deprioritizes changelog docs for non-release queries")
+    func packagesSearchDeprioritizesChangelogForGeneralQuery() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        try await index.indexDocument(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Getting Started",
+            content: "architecture onboarding guide",
+            filePath: "/test/getting-started.md",
+            contentHash: "guide-hash",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+        try await index.indexDocument(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/changelog",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "CHANGELOG",
+            content: "architecture architecture architecture guide guide",
+            filePath: "/test/CHANGELOG",
+            contentHash: "changelog-hash",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+
+        let provider = CompositeToolProvider(searchIndex: index, sampleDatabase: nil)
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("architecture guide"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.packages),
+            "limit": AnyCodable(10),
+        ]
+
+        let result = try await provider.callTool(name: "search", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            let markdown = textContent.text
+            let guideRange = markdown.range(of: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started")
+            let changelogRange = markdown.range(of: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/changelog")
+            #expect(guideRange != nil)
+            #expect(changelogRange != nil)
+            if let guideRange, let changelogRange {
+                #expect(guideRange.lowerBound < changelogRange.lowerBound)
+            }
+        }
+
+        await index.disconnect()
+    }
+
+    @Test("Packages search keeps changelog docs competitive for release-history queries")
+    func packagesSearchAllowsChangelogForReleaseQuery() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+
+        try await index.indexDocument(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Getting Started",
+            content: "starter guide for architecture breaking update planning",
+            filePath: "/test/getting-started.md",
+            contentHash: "guide-hash-release",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+        try await index.indexDocument(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/release_notes",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Release Notes",
+            content: "breaking update deprecated fixed migration version",
+            filePath: "/test/RELEASE_NOTES.md",
+            contentHash: "release-notes-hash",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+
+        let provider = CompositeToolProvider(searchIndex: index, sampleDatabase: nil)
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("breaking update"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.packages),
+            "limit": AnyCodable(10),
+        ]
+
+        let result = try await provider.callTool(name: "search", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            let markdown = textContent.text
+            let changelogRange = markdown.range(of: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/release_notes")
+            let guideRange = markdown.range(of: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started")
+            #expect(changelogRange != nil)
+            #expect(guideRange != nil)
+            if let changelogRange, let guideRange {
+                #expect(changelogRange.lowerBound < guideRange.lowerBound)
+            }
+        }
+
+        await index.disconnect()
+    }
+
     @Test("read_document resolves overlay URIs transparently")
     func readDocumentResolvesOverlayURI() async throws {
         let (coreIndex, coreCleanup) = try await createTestSearchIndex()

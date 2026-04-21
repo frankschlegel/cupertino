@@ -171,8 +171,70 @@ struct PackageResultMetadataTests {
         #expect(PackageResultMetadata.isPackageAPIDocumentation(apiDoc))
         #expect(!PackageResultMetadata.isPackageAPIDocumentation(metadata))
 
-        let prioritized = PackageResultMetadata.prioritizeAPIDocumentation([metadata, apiDoc])
+        let prioritized = PackageResultMetadata.prioritizePackageResults([metadata, apiDoc], query: "reducer")
         #expect(prioritized.first?.uri == apiDoc.uri)
+    }
+
+    @Test("Deprioritizes changelog docs for non-release package queries")
+    func deprioritizesChangelogForGeneralQueries() {
+        let guide = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Getting Started",
+            summary: "Overview guide.",
+            filePath: "/tmp/getting-started.md",
+            wordCount: 10,
+            rank: -1.0
+        )
+        let changelog = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/changelog",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "CHANGELOG",
+            summary: "Release history.",
+            filePath: "/tmp/CHANGELOG.md",
+            wordCount: 10,
+            rank: -5.0
+        )
+
+        #expect(PackageResultMetadata.isPackageChangelogDocumentation(changelog))
+
+        let prioritized = PackageResultMetadata.prioritizePackageResults(
+            [changelog, guide],
+            query: "architecture guide"
+        )
+        #expect(prioritized.first?.uri == guide.uri)
+    }
+
+    @Test("Keeps changelog docs competitive for release-history queries")
+    func keepsChangelogForReleaseQueries() {
+        let guide = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/getting-started",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Getting Started",
+            summary: "Overview guide.",
+            filePath: "/tmp/getting-started.md",
+            wordCount: 10,
+            rank: -1.0
+        )
+        let changelog = Search.Result(
+            uri: "packages://third-party/src-1/acme%2Facme-routing@1.25.5/docs/release_notes",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Release Notes",
+            summary: "Breaking changes in latest version.",
+            filePath: "/tmp/RELEASE_NOTES.md",
+            wordCount: 10,
+            rank: -5.0
+        )
+
+        let prioritized = PackageResultMetadata.prioritizePackageResults(
+            [guide, changelog],
+            query: "breaking version update"
+        )
+        #expect(prioritized.first?.uri == changelog.uri)
     }
 
     @Test("Extracts provenance from embedded third-party URI")

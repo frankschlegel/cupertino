@@ -47,7 +47,7 @@ public actor DocsSearchService: SearchService {
         )
 
         guard let overlayIndex else {
-            return prioritizedIfPackages(results: primaryResults, source: query.source)
+            return prioritizedIfPackages(results: primaryResults, source: query.source, queryText: query.text)
         }
 
         let overlayResults: [Search.Result]
@@ -66,11 +66,11 @@ public actor DocsSearchService: SearchService {
                 minVisionOS: query.minimumVisionOS
             )
         } catch {
-            return prioritizedIfPackages(results: primaryResults, source: query.source)
+            return prioritizedIfPackages(results: primaryResults, source: query.source, queryText: query.text)
         }
 
         let fused = ReciprocalRankFusion.fuse([primaryResults, overlayResults], limit: query.limit)
-        return prioritizedIfPackages(results: fused, source: query.source)
+        return prioritizedIfPackages(results: fused, source: query.source, queryText: query.text)
     }
 
     public func read(uri: String, format: Search.Index.DocumentFormat) async throws -> String? {
@@ -119,11 +119,15 @@ public actor DocsSearchService: SearchService {
         }
     }
 
-    private func prioritizedIfPackages(results: [Search.Result], source: String?) -> [Search.Result] {
+    private func prioritizedIfPackages(
+        results: [Search.Result],
+        source: String?,
+        queryText: String?
+    ) -> [Search.Result] {
         guard source == Shared.Constants.SourcePrefix.packages else {
             return results
         }
-        return PackageResultMetadata.prioritizeAPIDocumentation(results)
+        return PackageResultMetadata.prioritizePackageResults(results, query: queryText)
     }
 
     // MARK: - Convenience Methods
