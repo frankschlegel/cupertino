@@ -235,6 +235,35 @@ struct DocDeliveryContractTests {
         let framework = try #require(object["framework"] as? String)
         #expect(!framework.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
+
+    @Test("Package changelog delivery is clean in markdown and JSON")
+    func packageChangelogDeliveryShape() async throws {
+        let fixture = try await createContractSearchIndex()
+        defer { fixture.cleanup() }
+        let corpus = try await seedContractCorpus(on: fixture.index)
+
+        let markdown = try #require(
+            try await fixture.index.getDocumentContent(
+                uri: corpus.packageChangelogURI,
+                format: Search.Index.DocumentFormat.markdown
+            )
+        )
+        #expect(markdown.contains("# Changelog"))
+        #expect(!markdown.lowercased().hasPrefix("---\n"))
+        #expect(!containsDocSchemeOutsideCodeFences(markdown))
+
+        let json = try #require(
+            try await fixture.index.getDocumentContent(
+                uri: corpus.packageChangelogURI,
+                format: Search.Index.DocumentFormat.json
+            )
+        )
+        let data = try #require(json.data(using: .utf8))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["source"] as? String == Shared.Constants.SourcePrefix.packages)
+        #expect(object["framework"] as? String == "acme-routing")
+        #expect(object["rawMarkdown"] as? String != nil)
+    }
 }
 
 // MARK: - Fixtures
@@ -248,6 +277,7 @@ private struct SearchIndexFixture {
 private struct ContractCorpus {
     let packageCanonicalURI: String
     let packageLegacyURI: String
+    let packageChangelogURI: String
 }
 
 private func createContractSearchIndex() async throws -> SearchIndexFixture {
@@ -265,6 +295,7 @@ private func seedContractCorpus(on index: Search.Index) async throws -> Contract
     let packageLegacyURI = "packages://third-party/src-contract/acme%2Facme-routing@1.25.5/docc/composablearchitecture.doccarchive/documentation/composablearchitecture/gettingstarted"
     let packageBindingStateURI = "packages://third-party/src-contract/acme%2Facme-routing@1.25.5/docc/ComposableArchitecture/data/documentation/composablearchitecture/bindingstate"
     let packageReadmeURI = "packages://third-party/src-contract/acme%2Facme-routing@1.25.5/docs/readme"
+    let packageChangelogURI = "packages://third-party/src-contract/acme%2Facme-routing@1.25.5/docs/changelog"
     let appleURI = "apple-docs://swift/documentation_swift_array"
 
     let packageGettingStartedMarkdown = """
@@ -338,6 +369,25 @@ private func seedContractCorpus(on index: Search.Index) async throws -> Contract
     )
 
     try await index.indexDocument(
+        uri: packageChangelogURI,
+        source: Shared.Constants.SourcePrefix.packages,
+        framework: "acme-routing",
+        title: "Changelog",
+        content: "breaking updated migration marker",
+        filePath: "/tmp/CHANGELOG.md",
+        contentHash: "changelog-doc",
+        lastCrawled: Date(),
+        sourceType: Shared.Constants.SourcePrefix.packages,
+        jsonData: jsonPayload(
+            title: "Changelog",
+            uri: packageChangelogURI,
+            rawMarkdown: "# Changelog\n\n- Updated migration flow.",
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing"
+        )
+    )
+
+    try await index.indexDocument(
         uri: appleURI,
         source: Shared.Constants.SourcePrefix.appleDocs,
         framework: "swift",
@@ -358,7 +408,8 @@ private func seedContractCorpus(on index: Search.Index) async throws -> Contract
 
     return ContractCorpus(
         packageCanonicalURI: packageCanonicalURI,
-        packageLegacyURI: packageLegacyURI
+        packageLegacyURI: packageLegacyURI,
+        packageChangelogURI: packageChangelogURI
     )
 }
 
