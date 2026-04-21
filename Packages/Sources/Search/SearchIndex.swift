@@ -3819,6 +3819,19 @@ extension Search {
 
             switch format {
             case .json:
+                if isPackageDocCDocumentURI(metadata.resolvedURI) {
+                    if let normalized = try mergePackageDocCRawMarkdownIntoJSONIfNeeded(
+                        uri: metadata.resolvedURI,
+                        jsonString: jsonString
+                    ) {
+                        return normalized
+                    }
+                    if hasExplicitRawMarkdown(inJSON: jsonString) {
+                        return jsonString
+                    }
+                    throw SearchError.invalidQuery("Package DocC document is missing rawMarkdown: \(metadata.resolvedURI)")
+                }
+
                 // Return full structured JSON, but backfill rawMarkdown from FTS for legacy rows.
                 if let merged = try await mergeRawMarkdownIntoJSONIfMissing(uri: metadata.resolvedURI, jsonString: jsonString) {
                     return merged
@@ -3826,6 +3839,14 @@ extension Search {
                 return jsonString
 
             case .markdown:
+                if isPackageDocCDocumentURI(metadata.resolvedURI) {
+                    if let rawMarkdown = extractRawMarkdownFromGenericJSON(jsonString),
+                       !rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return rawMarkdown
+                    }
+                    throw SearchError.invalidQuery("Package DocC document is missing rawMarkdown: \(metadata.resolvedURI)")
+                }
+
                 // Try multiple fallbacks for markdown content
                 let jsonData = Data(jsonString.utf8)
                 let decoder = JSONDecoder()
@@ -3860,19 +3881,13 @@ extension Search {
         ) throws -> MetadataLookupResult? {
             var candidates: [String] = [uri]
 
-            if let legacyNormalized = normalizeLegacyDocCArchiveURI(uri), legacyNormalized != uri {
-                candidates.append(legacyNormalized)
-            }
+            appendUniqueCandidate(normalizeLegacyDocCArchiveURI(uri), to: &candidates)
 
-            if let canonical = try resolveDocCDataURICandidate(uri: uri, database: database),
-               !candidates.contains(canonical) {
-                candidates.append(canonical)
-            }
+            appendUniqueCandidate(try resolveDocCDataURICandidate(uri: uri, database: database), to: &candidates)
 
             if let last = candidates.last,
-               let canonical = try resolveDocCDataURICandidate(uri: last, database: database),
-               !candidates.contains(canonical) {
-                candidates.append(canonical)
+               last != uri {
+                appendUniqueCandidate(try resolveDocCDataURICandidate(uri: last, database: database), to: &candidates)
             }
 
             for candidate in candidates {
@@ -3882,6 +3897,13 @@ extension Search {
             }
 
             return nil
+        }
+
+        private func appendUniqueCandidate(_ candidate: String?, to candidates: inout [String]) {
+            guard let candidate, !candidates.contains(candidate) else {
+                return
+            }
+            candidates.append(candidate)
         }
 
         private func lookupMetadata(
@@ -3966,7 +3988,7 @@ extension Search {
             SELECT uri
             FROM docs_metadata
             WHERE uri LIKE ? ESCAPE '\\'
-            LIMIT 1;
+            ORDER BY uri COLLATE NOCASE ASC;
             """
 
             var statement: OpaquePointer?
@@ -3978,11 +4000,72 @@ extension Search {
             }
 
             sqlite3_bind_text(statement, 1, (pattern as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_ROW,
-                  let uriPtr = sqlite3_column_text(statement, 0) else {
+
+            var matches: [String] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let uriPtr = sqlite3_column_text(statement, 0) else {
+                    continue
+                }
+                matches.append(String(cString: uriPtr))
+            }
+
+            guard !matches.isEmpty else {
                 return nil
             }
-            return String(cString: uriPtr)
+
+            let archiveHint = normalizedDocCArchiveSegment(fromURI: uri)
+            if let archiveHint {
+                let filtered = matches.filter {
+                    normalizedDocCArchiveSegment(fromURI: $0) == archiveHint
+                }
+
+                if filtered.count == 1 {
+                    return filtered[0]
+                }
+                if filtered.count > 1 {
+                    let joined = filtered.joined(separator: ", ")
+                    throw SearchError.invalidQuery(
+                        "Ambiguous package DocC URI '\(uri)' matched multiple canonical documents: \(joined)"
+                    )
+                }
+
+                // Archive-specific lookup was requested; do not silently choose a different archive.
+                return nil
+            }
+
+            if matches.count == 1 {
+                return matches[0]
+            }
+
+            let joined = matches.joined(separator: ", ")
+            throw SearchError.invalidQuery(
+                "Ambiguous package DocC URI '\(uri)' matched multiple canonical documents: \(joined)"
+            )
+        }
+
+        private func normalizedDocCArchiveSegment(fromURI uri: String) -> String? {
+            guard let doccRange = uri.range(of: "/docc/") else {
+                return nil
+            }
+
+            let tail = uri[doccRange.upperBound...]
+            guard let dataRange = tail.range(of: "/data/") ?? tail.range(of: ".doccarchive/") else {
+                return nil
+            }
+
+            var archive = String(tail[..<dataRange.lowerBound])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !archive.isEmpty else {
+                return nil
+            }
+
+            if archive.hasSuffix(".doccarchive") {
+                archive = String(archive.dropLast(".doccarchive".count))
+            }
+
+            let decoded = archive.removingPercentEncoding ?? archive
+            let normalized = decoded.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.isEmpty ? nil : normalized
         }
 
         private func escapeLikePattern(_ value: String) -> String {
@@ -3990,6 +4073,45 @@ extension Search {
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "%", with: "\\%")
                 .replacingOccurrences(of: "_", with: "\\_")
+        }
+
+        private func isPackageDocCDocumentURI(_ uri: String) -> Bool {
+            uri.hasPrefix("packages://") && uri.contains("/docc/")
+        }
+
+        private func hasExplicitRawMarkdown(inJSON jsonString: String) -> Bool {
+            guard let markdown = extractRawMarkdownFromGenericJSON(jsonString) else {
+                return false
+            }
+            return !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        private func mergePackageDocCRawMarkdownIntoJSONIfNeeded(uri: String, jsonString: String) throws -> String? {
+            guard let jsonData = jsonString.data(using: .utf8),
+                  var object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                return nil
+            }
+
+            let existingRaw = object["rawMarkdown"] as? String
+            if let existingRaw, !existingRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return nil
+            }
+
+            guard let rawMarkdown = extractRawMarkdownFromGenericJSON(jsonString),
+                  !rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SearchError.invalidQuery("Package DocC document is missing rawMarkdown: \(uri)")
+            }
+
+            object["rawMarkdown"] = rawMarkdown
+            if object["uri"] == nil {
+                object["uri"] = uri
+            }
+
+            guard let mergedData = try? JSONSerialization.data(withJSONObject: object, options: []),
+                  let merged = String(data: mergedData, encoding: .utf8) else {
+                return nil
+            }
+            return merged
         }
 
         private func mergeRawMarkdownIntoJSONIfMissing(uri: String, jsonString: String) async throws -> String? {

@@ -97,6 +97,20 @@ public actor DocsResourceProvider: ResourceProvider {
     public func readResource(uri: String) async throws -> ReadResourceResult {
         let markdown: String
 
+        // For package URIs, prefer overlay first so package markdown delivery uses the newest indexed content.
+        if uri.hasPrefix("packages://"), let overlaySearchIndex {
+            if let dbContent = try await overlaySearchIndex.getDocumentContent(uri: uri, format: .markdown) {
+                let contents = ResourceContents.text(
+                    TextResourceContents(
+                        uri: uri,
+                        mimeType: Shared.Constants.Search.mimeTypeMarkdown,
+                        text: dbContent
+                    )
+                )
+                return ReadResourceResult(contents: [contents])
+            }
+        }
+
         // Try primary database first, then overlay database.
         if let searchIndex {
             if let dbContent = try await searchIndex.getDocumentContent(uri: uri, format: .markdown) {
