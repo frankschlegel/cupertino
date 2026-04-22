@@ -129,7 +129,7 @@ extension Core {
                         logDebug("Package.resolved lookup for \(owner)/\(repo) on \(branch) got HTTP \(http.statusCode)")
                         continue
                     }
-                    if let locations = parseLocations(from: data) {
+                    if let locations = Self.parsePackageResolvedLocations(data) {
                         return .success(locations)
                     }
                     return .malformed
@@ -141,26 +141,42 @@ extension Core {
             return .missing
         }
 
-        /// Parse both v1 (pins[].repositoryURL) and v2/v3 (pins[].location) formats.
-        private func parseLocations(from data: Data) -> [String]? {
-            guard
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let pins = json["pins"] as? [[String: Any]]
-            else {
+        /// Parse both v1 (`pins[].repositoryURL` or nested `pins[].object.repositoryURL`)
+        /// and v2/v3 (`pins[].location`) formats. Returns nil when the JSON root isn't a
+        /// dict or the `pins` key is missing / wrong-typed; returns an empty array when
+        /// `pins` is present but empty.
+        internal static func parsePackageResolvedLocations(_ data: Data) -> [String]? {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            let pins: [[String: Any]]
+            if let rootPins = json["pins"] as? [[String: Any]] {
+                pins = rootPins
+            } else if let object = json["object"] as? [String: Any],
+                      let nestedPins = object["pins"] as? [[String: Any]]
+            {
+                pins = nestedPins
+            } else {
                 return nil
             }
             var out: [String] = []
             for pin in pins {
                 if let location = pin["location"] as? String {
                     out.append(location)
-                } else if let object = pin["object"] as? [String: Any],
-                          let repositoryURL = pin["repositoryURL"] as? String ?? object["repositoryURL"] as? String {
-                    out.append(repositoryURL)
                 } else if let repositoryURL = pin["repositoryURL"] as? String {
+                    out.append(repositoryURL)
+                } else if let object = pin["object"] as? [String: Any],
+                          let repositoryURL = object["repositoryURL"] as? String {
                     out.append(repositoryURL)
                 }
             }
             return out
+        }
+
+        /// Test hook: expose the GitHub URL parser without leaking the fileprivate struct.
+        internal static func parseGitHubRepo(_ location: String) -> (owner: String, repo: String)? {
+            guard let repo = GitHubRepo(location: location) else { return nil }
+            return (repo.owner, repo.repo)
         }
 
         // MARK: - Helpers
