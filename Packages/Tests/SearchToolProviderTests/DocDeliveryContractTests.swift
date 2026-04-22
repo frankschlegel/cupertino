@@ -153,6 +153,33 @@ struct DocDeliveryContractTests {
         #expect(markdown?.contains("primary overview content") == false)
     }
 
+    @Test("Package read falls back to primary when overlay read throws")
+    func packageReadFallsBackToPrimaryWhenOverlayReadThrows() async throws {
+        let primary = try await createContractSearchIndex()
+        defer { primary.cleanup() }
+        let overlay = try await createContractSearchIndex()
+        defer { overlay.cleanup() }
+
+        let sharedURI = "packages://shared/acme-routing/overview"
+        try await primary.index.indexDocument(
+            uri: sharedURI,
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Primary Overview",
+            content: "primary overview content",
+            filePath: "/tmp/primary-overview.md",
+            contentHash: "primary-overview-fallback",
+            lastCrawled: Date(),
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+
+        await overlay.index.disconnect()
+
+        let docsService = DocsSearchService(index: primary.index, overlayIndex: overlay.index)
+        let markdown = try await docsService.read(uri: sharedURI, format: Search.Index.DocumentFormat.markdown)
+        #expect(markdown?.contains("primary overview content") == true)
+    }
+
     @Test("Package DocC retrieval fails fast when rawMarkdown is missing")
     func packageDocCMissingRawMarkdownThrows() async throws {
         let fixture = try await createContractSearchIndex()

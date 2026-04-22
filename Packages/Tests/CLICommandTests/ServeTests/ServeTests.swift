@@ -189,6 +189,61 @@ struct MCPCommandTests {
         }
     }
 
+    @Test("Read package resource falls back to primary when overlay read throws")
+    func readPackageResourceFallsBackToPrimaryWhenOverlayReadThrows() async throws {
+        print("🧪 Test: Fallback to primary when overlay read fails")
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cupertino-mcp-overlay-fallback-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let primaryDB = tempDir.appendingPathComponent("search.db")
+        let overlayDB = tempDir.appendingPathComponent("overlay-search.db")
+        let primaryIndex = try await Search.Index(dbPath: primaryDB)
+        let overlayIndex = try await Search.Index(dbPath: overlayDB)
+
+        defer {
+            Task {
+                await primaryIndex.disconnect()
+                await overlayIndex.disconnect()
+            }
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let sharedURI = "packages://shared/acme-routing/overview"
+        try await primaryIndex.indexDocument(
+            uri: sharedURI,
+            source: Shared.Constants.SourcePrefix.packages,
+            framework: "acme-routing",
+            title: "Primary Overview",
+            content: "Primary fallback content.",
+            filePath: "/test/primary-overview.md",
+            contentHash: "primary-fallback-hash",
+            lastCrawled: Date()
+        )
+
+        await overlayIndex.disconnect()
+
+        let config = Shared.Configuration(
+            crawler: Shared.CrawlerConfiguration(outputDirectory: tempDir),
+            changeDetection: Shared.ChangeDetectionConfiguration(),
+            output: Shared.OutputConfiguration()
+        )
+        let provider = DocsResourceProvider(
+            configuration: config,
+            searchIndex: primaryIndex,
+            overlaySearchIndex: overlayIndex
+        )
+
+        let result = try await provider.readResource(uri: sharedURI)
+        #expect(!result.contents.isEmpty, "Fallback content should not be empty")
+        if let firstContent = result.contents.first,
+           case let .text(textContent) = firstContent {
+            #expect(textContent.text.contains("Primary fallback content."))
+            print("   ✅ Primary fallback read succeeded")
+        }
+    }
+
     @Test("Register search tool provider", .tags(.integration), .serialized)
     @MainActor
     func registerSearchProvider() async throws {

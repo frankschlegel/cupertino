@@ -75,8 +75,12 @@ public actor DocsSearchService: SearchService {
 
     public func read(uri: String, format: Search.Index.DocumentFormat) async throws -> String? {
         if uri.hasPrefix("packages://"), let overlayIndex {
-            if let overlay = try await overlayIndex.getDocumentContent(uri: uri, format: format) {
-                return overlay
+            do {
+                if let overlay = try await overlayIndex.getDocumentContent(uri: uri, format: format) {
+                    return overlay
+                }
+            } catch {
+                // Ignore overlay read failures and fall back to primary index.
             }
             return try await primaryIndex.getDocumentContent(uri: uri, format: format)
         }

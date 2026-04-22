@@ -99,15 +99,19 @@ public actor DocsResourceProvider: ResourceProvider {
 
         // For package URIs, prefer overlay first so package markdown delivery uses the newest indexed content.
         if uri.hasPrefix("packages://"), let overlaySearchIndex {
-            if let dbContent = try await overlaySearchIndex.getDocumentContent(uri: uri, format: .markdown) {
-                let contents = ResourceContents.text(
-                    TextResourceContents(
-                        uri: uri,
-                        mimeType: Shared.Constants.Search.mimeTypeMarkdown,
-                        text: dbContent
+            do {
+                if let dbContent = try await overlaySearchIndex.getDocumentContent(uri: uri, format: .markdown) {
+                    let contents = ResourceContents.text(
+                        TextResourceContents(
+                            uri: uri,
+                            mimeType: Shared.Constants.Search.mimeTypeMarkdown,
+                            text: dbContent
+                        )
                     )
-                )
-                return ReadResourceResult(contents: [contents])
+                    return ReadResourceResult(contents: [contents])
+                }
+            } catch {
+                // Ignore overlay read failures and continue with primary/fallback resolution.
             }
         }
 
