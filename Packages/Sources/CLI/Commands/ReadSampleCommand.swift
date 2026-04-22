@@ -41,7 +41,7 @@ struct ReadSampleCommand: AsyncParsableCommand {
         ) { service in
             guard let project = try await service.getProject(id: projectId) else {
                 Log.error("Project not found: \(projectId)")
-                Log.output("Use 'cupertino list-samples' or 'cupertino search-samples' to find valid project IDs.")
+                Log.output("Use 'cupertino list-samples' or 'cupertino search --source samples' to find valid project IDs.")
                 throw ExitCode.failure
             }
 
