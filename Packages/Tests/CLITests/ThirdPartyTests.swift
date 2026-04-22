@@ -517,6 +517,45 @@ struct ThirdPartyTests {
         #expect(installs.count == 1)
     }
 
+    @Test("Update prefers package-name selector over implicit local path for bare names")
+    func updateBareNamePrefersPackageNameIntent() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let collisionName = "selector-collision-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+        let localCollisionDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(collisionName)
+        try FileManager.default.createDirectory(at: localCollisionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: localCollisionDir) }
+
+        let manager = ThirdPartyManager(
+            storeURL: testDir.appendingPathComponent("third-party"),
+            packageLookup: ThirdPartyPackageLookup {
+                [
+                    .init(
+                        owner: "acme",
+                        repo: collisionName,
+                        url: "https://github.com/acme/\(collisionName)",
+                        stars: 42,
+                        summary: "Collision fixture"
+                    )
+                ]
+            }
+        )
+
+        do {
+            _ = try await manager.update(sourceInput: collisionName)
+            Issue.record("Expected update() to fail when selector is not installed")
+        } catch let error as ThirdPartyManagerError {
+            switch error {
+            case let .notInstalledForUpdate(identity):
+                #expect(identity == "https://github.com/acme/\(collisionName)")
+            default:
+                Issue.record("Unexpected error: \(error.localizedDescription)")
+            }
+        }
+    }
+
     @Test("Local source add rejects duplicates, update is targeted, remove is precise")
     func localLifecycle() async throws {
         let testDir = Self.testDirectory()
@@ -1352,6 +1391,150 @@ struct ThirdPartyTests {
         #expect(removed.provenance == "pointfreeco/swift-composable-architecture@1.25.5")
         let installsAfterRemove = try Self.readManifestInstalls(from: storeDir)
         #expect(installsAfterRemove.isEmpty)
+    }
+
+    @Test("Remove bare package-name selector ignores local-path collision")
+    func removeBarePackageNameIgnoresImplicitLocalPathCollision() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let collisionName = "selector-collision-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+        let localCollisionDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(collisionName)
+        try FileManager.default.createDirectory(at: localCollisionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: localCollisionDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        let now = Date()
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "github-src",
+                    identityKey: "github:acme/\(collisionName)",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/acme/\(collisionName)@1.0.0",
+                    displaySource: "https://github.com/acme/\(collisionName)",
+                    provenance: "acme/\(collisionName)@1.0.0",
+                    framework: collisionName,
+                    uriPrefix: "packages://third-party/github-src/",
+                    projectPrefix: "tp-github-src-",
+                    reference: "1.0.0",
+                    localPath: nil,
+                    owner: "acme",
+                    repo: collisionName,
+                    snapshotHash: "abc123",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+                .init(
+                    id: "local-src",
+                    identityKey: "local:\(localCollisionDir.path)",
+                    sourceKind: "local",
+                    originalSourceInput: collisionName,
+                    displaySource: localCollisionDir.path,
+                    provenance: "local@snapshot-local",
+                    framework: collisionName,
+                    uriPrefix: "packages://third-party/local-src/",
+                    projectPrefix: "tp-local-src-",
+                    reference: "snapshot-local",
+                    localPath: localCollisionDir.path,
+                    owner: nil,
+                    repo: nil,
+                    snapshotHash: "def456",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+            ]
+        )
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let removed = try await manager.remove(sourceInput: collisionName)
+
+        #expect(removed.provenance == "acme/\(collisionName)@1.0.0")
+        let installsAfterRemove = try Self.readManifestFullInstalls(from: storeDir)
+        #expect(installsAfterRemove.count == 1)
+        #expect(installsAfterRemove[0].identityKey == "local:\(localCollisionDir.path)")
+    }
+
+    @Test("Remove explicit local path selector still targets local install")
+    func removeExplicitLocalPathStillTargetsLocal() async throws {
+        let testDir = Self.testDirectory()
+        defer { try? FileManager.default.removeItem(at: testDir) }
+
+        let collisionName = "selector-collision-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+        let localCollisionDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(collisionName)
+        try FileManager.default.createDirectory(at: localCollisionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: localCollisionDir) }
+
+        let storeDir = testDir.appendingPathComponent("third-party")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+
+        let now = Date()
+        try Self.writeManifest(
+            to: storeDir,
+            installs: [
+                .init(
+                    id: "github-src",
+                    identityKey: "github:acme/\(collisionName)",
+                    sourceKind: "github",
+                    originalSourceInput: "https://github.com/acme/\(collisionName)@1.0.0",
+                    displaySource: "https://github.com/acme/\(collisionName)",
+                    provenance: "acme/\(collisionName)@1.0.0",
+                    framework: collisionName,
+                    uriPrefix: "packages://third-party/github-src/",
+                    projectPrefix: "tp-github-src-",
+                    reference: "1.0.0",
+                    localPath: nil,
+                    owner: "acme",
+                    repo: collisionName,
+                    snapshotHash: "abc123",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+                .init(
+                    id: "local-src",
+                    identityKey: "local:\(localCollisionDir.path)",
+                    sourceKind: "local",
+                    originalSourceInput: collisionName,
+                    displaySource: localCollisionDir.path,
+                    provenance: "local@snapshot-local",
+                    framework: collisionName,
+                    uriPrefix: "packages://third-party/local-src/",
+                    projectPrefix: "tp-local-src-",
+                    reference: "snapshot-local",
+                    localPath: localCollisionDir.path,
+                    owner: nil,
+                    repo: nil,
+                    snapshotHash: "def456",
+                    docsIndexed: 0,
+                    sampleProjectsIndexed: 0,
+                    sampleFilesIndexed: 0,
+                    installedAt: now,
+                    updatedAt: now
+                ),
+            ]
+        )
+
+        let manager = ThirdPartyManager(storeURL: storeDir)
+        let removed = try await manager.remove(sourceInput: localCollisionDir.path)
+
+        #expect(removed.provenance == "local@snapshot-local")
+        let installsAfterRemove = try Self.readManifestFullInstalls(from: storeDir)
+        #expect(installsAfterRemove.count == 1)
+        #expect(installsAfterRemove[0].identityKey == "github:acme/\(collisionName)")
     }
 
     @Test("List returns empty results when manifest is missing or empty")

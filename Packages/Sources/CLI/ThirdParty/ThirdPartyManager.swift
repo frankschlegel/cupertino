@@ -349,7 +349,11 @@ struct ThirdPartyManager {
         buildOptions: ThirdPartyBuildOptions,
         manifest: ThirdPartyManifest
     ) async throws -> ResolvedUpsertInput {
-        let unresolvedSource = try await parseSourceInput(sourceInput, buildOptions: buildOptions)
+        let unresolvedSource = try await parseSourceInput(
+            sourceInput,
+            buildOptions: buildOptions,
+            mode: mode
+        )
         let existingIndex = manifest.installs.firstIndex(where: { $0.identityKey == unresolvedSource.identityKey })
 
         var effectiveMode = mode
@@ -385,18 +389,27 @@ struct ThirdPartyManager {
 
     private func parseSourceInput(
         _ sourceInput: String,
-        buildOptions: ThirdPartyBuildOptions
+        buildOptions: ThirdPartyBuildOptions,
+        mode: UpsertMode
     ) async throws -> ThirdPartySource {
         let trimmed = sourceInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ThirdPartyManagerError.invalidSource("Source cannot be empty")
         }
 
+        let (source, explicitRef) = try splitSourceAndReference(trimmed)
+
+        if mode == .update, isBarePackageNameSelector(source) {
+            return try await resolvePackageNameSource(
+                query: source,
+                explicitRef: explicitRef,
+                buildOptions: buildOptions
+            )
+        }
+
         if let localPath = localDirectoryIfExists(trimmed) {
             return ThirdPartySource.local(path: localPath)
         }
-
-        let (source, explicitRef) = try splitSourceAndReference(trimmed)
 
         if let localPath = localDirectoryIfExists(source) {
             return ThirdPartySource.local(path: localPath)
@@ -708,17 +721,29 @@ struct ThirdPartyManager {
             throw ThirdPartyManagerError.invalidSource("Source cannot be empty")
         }
 
+        let isBarePackageSelector = isBarePackageNameSelector(trimmed)
+        let allowsLocalPathMatching = isExplicitLocalPathSelector(trimmed)
         var matched = Set<Int>()
 
-        for (index, install) in manifest.installs.enumerated() where
-            install.originalSourceInput == trimmed ||
-            install.displaySource == trimmed ||
-            install.provenance == trimmed ||
-            install.identityKey == trimmed {
-            matched.insert(index)
+        for (index, install) in manifest.installs.enumerated() {
+            if isBarePackageSelector, install.sourceKind == ThirdPartySource.Kind.local.rawValue {
+                continue
+            }
+            if install.originalSourceInput == trimmed ||
+                install.displaySource == trimmed ||
+                install.provenance == trimmed ||
+                install.identityKey == trimmed {
+                matched.insert(index)
+            }
         }
 
-        if let localIdentity = localIdentityKey(for: trimmed) {
+        if isBarePackageSelector {
+            matched.formUnion(
+                resolveByPackageNameSelector(trimmed, installs: manifest.installs)
+            )
+        }
+
+        if allowsLocalPathMatching, let localIdentity = localIdentityKey(for: trimmed) {
             for (index, install) in manifest.installs.enumerated() where install.identityKey == localIdentity {
                 matched.insert(index)
             }
@@ -730,7 +755,7 @@ struct ThirdPartyManager {
             }
         }
 
-        if matched.isEmpty {
+        if matched.isEmpty, !isBarePackageSelector {
             matched.formUnion(
                 resolveByPackageNameSelector(trimmed, installs: manifest.installs)
             )
@@ -2636,6 +2661,35 @@ struct ThirdPartyManager {
 
     private func makeSourceID(identityKey: String) -> String {
         "src-\(HashUtilities.sha256(of: identityKey).prefix(16))"
+    }
+
+    private func isExplicitLocalPathSelector(_ selector: String) -> Bool {
+        let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return false
+        }
+        return trimmed.hasPrefix("/") ||
+            trimmed.hasPrefix("./") ||
+            trimmed.hasPrefix("../") ||
+            trimmed.hasPrefix("~/")
+    }
+
+    private func isBarePackageNameSelector(_ selector: String) -> Bool {
+        let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return false
+        }
+        let source = trimmed.split(separator: "@", maxSplits: 1).first.map(String.init) ?? trimmed
+        guard !source.isEmpty else {
+            return false
+        }
+        guard !source.hasPrefix("http://"), !source.hasPrefix("https://") else {
+            return false
+        }
+        guard !isExplicitLocalPathSelector(source) else {
+            return false
+        }
+        return !source.contains("/")
     }
 
     private func localIdentityKey(for selector: String) -> String? {
