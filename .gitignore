@@ -55,3 +55,6 @@ Build/
 .ai-agent-rules
 AGENTS.md
 .ai-agent-rule
+
+# Local-only mihaela-agents clone (never pushed to public GitHub)
+.agents
