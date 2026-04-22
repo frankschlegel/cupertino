@@ -158,6 +158,41 @@ func createTestSampleDatabase() async throws -> (database: SampleIndex.Database,
     return (database, cleanup)
 }
 
+/// Creates a temporary third-party sample database for testing overlay behavior
+func createOverlaySampleDatabase() async throws -> (database: SampleIndex.Database, cleanup: () -> Void) {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("sample-overlay-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    let dbPath = tempDir.appendingPathComponent("samples.db")
+    let database = try await SampleIndex.Database(dbPath: dbPath)
+
+    let project = SampleIndex.Project(
+        id: "tp-routing-sample",
+        title: "Third-Party Routing Sample",
+        description: "A third-party sample project for routing flows.",
+        frameworks: ["SwiftUI"],
+        readme: "# Third-Party Routing Sample\n\nDemonstrates overlay sample ingestion.",
+        webURL: "https://example.com/tp-routing-sample",
+        zipFilename: "tp-routing-sample.zip",
+        fileCount: 1,
+        totalSize: 2400
+    )
+    try await database.indexProject(project)
+
+    let file = SampleIndex.File(
+        projectId: "tp-routing-sample",
+        path: "Sources/RoutingFlow.swift",
+        content: "import SwiftUI\n\nlet routingOverlayMarker = \"overlay-routing\""
+    )
+    try await database.indexFile(file)
+
+    let cleanup: () -> Void = {
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    return (database, cleanup)
+}
+
 // MARK: - CompositeToolProvider Initialization Tests
 
 @Suite("CompositeToolProvider Initialization", .serialized)
@@ -1335,6 +1370,117 @@ struct ThirdPartyOverlayIntegrationTests {
             #expect(textContent.text.contains("Legacy URI compatibility content."))
         } else {
             Issue.record("Expected text content response")
+        }
+
+        await index.disconnect()
+    }
+
+    @Test("Sample tools merge primary and overlay sample databases")
+    func sampleToolsMergePrimaryAndOverlayDatabases() async throws {
+        let (primaryDatabase, primaryCleanup) = try await createTestSampleDatabase()
+        defer { primaryCleanup() }
+        let (overlayDatabase, overlayCleanup) = try await createOverlaySampleDatabase()
+        defer { overlayCleanup() }
+
+        let provider = CompositeToolProvider(
+            searchIndex: nil,
+            sampleDatabase: primaryDatabase,
+            overlaySampleDatabase: overlayDatabase
+        )
+
+        let searchArgs: [String: AnyCodable] = [
+            "query": AnyCodable("routing"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.samples),
+            "limit": AnyCodable(10),
+        ]
+        let searchResult = try await provider.callTool(name: "search", arguments: searchArgs)
+        if case let .text(textContent) = searchResult.content.first {
+            #expect(textContent.text.contains("tp-routing-sample"))
+        }
+
+        let listResult = try await provider.callTool(name: "list_samples", arguments: nil)
+        if case let .text(textContent) = listResult.content.first {
+            #expect(textContent.text.contains("animating-views-sample"))
+            #expect(textContent.text.contains("tp-routing-sample"))
+        }
+
+        let readSampleArgs: [String: AnyCodable] = [
+            "project_id": AnyCodable("tp-routing-sample"),
+        ]
+        let readSampleResult = try await provider.callTool(name: "read_sample", arguments: readSampleArgs)
+        if case let .text(textContent) = readSampleResult.content.first {
+            #expect(textContent.text.contains("Third-Party Routing Sample"))
+            #expect(textContent.text.contains("Demonstrates overlay sample ingestion"))
+        }
+
+        let readFileArgs: [String: AnyCodable] = [
+            "project_id": AnyCodable("tp-routing-sample"),
+            "file_path": AnyCodable("Sources/RoutingFlow.swift"),
+        ]
+        let readFileResult = try await provider.callTool(name: "read_sample_file", arguments: readFileArgs)
+        if case let .text(textContent) = readFileResult.content.first {
+            #expect(textContent.text.contains("routingOverlayMarker"))
+        }
+    }
+
+    @Test("Unified search all includes overlay sample projects")
+    func unifiedSearchIncludesOverlaySamples() async throws {
+        let (primaryDatabase, primaryCleanup) = try await createTestSampleDatabase()
+        defer { primaryCleanup() }
+        let (overlayDatabase, overlayCleanup) = try await createOverlaySampleDatabase()
+        defer { overlayCleanup() }
+
+        let provider = CompositeToolProvider(
+            searchIndex: nil,
+            sampleDatabase: primaryDatabase,
+            overlaySampleDatabase: overlayDatabase
+        )
+
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("routing"),
+            "source": AnyCodable("all"),
+        ]
+        let result = try await provider.callTool(name: "search", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            #expect(textContent.text.contains("Unified Search"))
+            #expect(textContent.text.contains("Third-Party Routing Sample"))
+        }
+    }
+
+    @Test("Apple-docs searches include overlay sample teasers")
+    func appleDocsSearchIncludesOverlaySampleTeasers() async throws {
+        let (index, cleanup) = try await createTestSearchIndex()
+        defer { try? cleanup() }
+        let (overlayDatabase, overlayCleanup) = try await createOverlaySampleDatabase()
+        defer { overlayCleanup() }
+
+        try await index.indexDocument(
+            uri: "apple-docs://swiftui/routing",
+            source: Shared.Constants.SourcePrefix.appleDocs,
+            framework: "swiftui",
+            title: "SwiftUI Routing",
+            content: "routing patterns in Apple docs",
+            filePath: "/test/swiftui-routing.md",
+            contentHash: "apple-docs-routing-hash",
+            lastCrawled: Date(),
+            sourceType: "apple"
+        )
+
+        let provider = CompositeToolProvider(
+            searchIndex: index,
+            sampleDatabase: nil,
+            overlaySampleDatabase: overlayDatabase
+        )
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("routing"),
+            "source": AnyCodable(Shared.Constants.SourcePrefix.appleDocs),
+        ]
+
+        let result = try await provider.callTool(name: "search", arguments: args)
+        if case let .text(textContent) = result.content.first {
+            #expect(textContent.text.contains("Also in Sample Code"))
+            #expect(textContent.text.contains("Third-Party Routing Sample"))
         }
 
         await index.disconnect()

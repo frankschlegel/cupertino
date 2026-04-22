@@ -1,4 +1,5 @@
 import Foundation
+@testable import SampleIndex
 @testable import Search
 @testable import Services
 @testable import Shared
@@ -266,4 +267,181 @@ struct ServiceContainerOverlayPathResolutionTests {
 
         #expect(resolvedOverlayPath == nil)
     }
+
+    @Test("Custom sample db path does not auto-attach default third-party overlay")
+    func customSamplePathDoesNotAttachDefaultOverlay() {
+        let customSamplePath = URL(fileURLWithPath: "/tmp/custom-samples.db")
+        let resolvedOverlayPath = ServiceContainer.resolveOverlaySamplePath(
+            primarySamplePath: customSamplePath,
+            customSamplePathArgument: customSamplePath.path
+        )
+
+        #expect(resolvedOverlayPath == nil)
+    }
+
+    @Test("Default sample db path auto-attaches third-party overlay when present")
+    func defaultSamplePathAttachesOverlayWhenPresent() throws {
+        let overlayPath = Shared.Constants.defaultThirdPartySamplesDatabase
+        let fileManager = FileManager.default
+        let overlayAlreadyExists = fileManager.fileExists(atPath: overlayPath.path)
+
+        if !overlayAlreadyExists {
+            try fileManager.createDirectory(
+                at: overlayPath.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            _ = fileManager.createFile(atPath: overlayPath.path, contents: Data())
+        }
+
+        defer {
+            if !overlayAlreadyExists {
+                try? fileManager.removeItem(at: overlayPath)
+            }
+        }
+
+        let resolvedOverlayPath = ServiceContainer.resolveOverlaySamplePath(
+            primarySamplePath: SampleIndex.defaultDatabasePath,
+            customSamplePathArgument: nil
+        )
+
+        #expect(resolvedOverlayPath == overlayPath)
+    }
+}
+
+@Suite("SampleSearchService Overlay Behavior", .serialized)
+struct SampleSearchServiceOverlayTests {
+    @Test("Merges and de-dupes projects/files across primary and overlay databases")
+    func mergesAndDedupesAcrossDatabases() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cupertino-services-sample-merge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let primaryDatabase = try await makeSampleDatabase(at: tempRoot.appendingPathComponent("primary"))
+        let overlayDatabase = try await makeSampleDatabase(at: tempRoot.appendingPathComponent("overlay"))
+        let service = SampleSearchService(database: primaryDatabase, overlayDatabase: overlayDatabase)
+        defer {
+            Task { await service.disconnect() }
+        }
+
+        try await primaryDatabase.indexProject(makeProject(id: "shared-sample", title: "Shared Primary"))
+        try await primaryDatabase.indexProject(makeProject(id: "apple-only", title: "Apple Only"))
+        try await primaryDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "shared-sample",
+                path: "Sources/Shared.swift",
+                content: "let marker = \"needle primary\""
+            )
+        )
+
+        try await overlayDatabase.indexProject(makeProject(id: "shared-sample", title: "Shared Overlay"))
+        try await overlayDatabase.indexProject(makeProject(id: "tp-only", title: "Third Party Only"))
+        try await overlayDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "shared-sample",
+                path: "Sources/Shared.swift",
+                content: "let marker = \"needle overlay duplicate\""
+            )
+        )
+        try await overlayDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "tp-only",
+                path: "Sources/OverlayOnly.swift",
+                content: "let marker = \"needle overlay unique\""
+            )
+        )
+
+        let projects = try await service.listProjects(limit: 20)
+        #expect(projects.count == 3)
+        #expect(projects.map(\.id).contains("apple-only"))
+        #expect(projects.map(\.id).contains("shared-sample"))
+        #expect(projects.map(\.id).contains("tp-only"))
+        #expect(projects.first(where: { $0.id == "shared-sample" })?.title == "Shared Primary")
+
+        let searchResult = try await service.search(
+            SampleQuery(text: "needle", searchFiles: true, limit: 20)
+        )
+        let fileKeys = searchResult.files.map { "\($0.projectId)|\($0.path)" }
+        #expect(fileKeys.filter { $0 == "shared-sample|Sources/Shared.swift" }.count == 1)
+        #expect(fileKeys.contains("tp-only|Sources/OverlayOnly.swift"))
+
+        #expect(try await service.projectCount() == 3)
+        #expect(try await service.fileCount() == 2)
+    }
+
+    @Test("Falls back to overlay reads and keeps Apple-first behavior on ID conflicts")
+    func fallbackReadsAndAppleFirstConflictPolicy() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cupertino-services-sample-read-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let primaryDatabase = try await makeSampleDatabase(at: tempRoot.appendingPathComponent("primary"))
+        let overlayDatabase = try await makeSampleDatabase(at: tempRoot.appendingPathComponent("overlay"))
+        let service = SampleSearchService(database: primaryDatabase, overlayDatabase: overlayDatabase)
+        defer {
+            Task { await service.disconnect() }
+        }
+
+        try await primaryDatabase.indexProject(makeProject(id: "shared-sample", title: "Shared Primary"))
+        try await primaryDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "shared-sample",
+                path: "Sources/Primary.swift",
+                content: "let source = \"primary\""
+            )
+        )
+
+        try await overlayDatabase.indexProject(makeProject(id: "shared-sample", title: "Shared Overlay"))
+        try await overlayDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "shared-sample",
+                path: "Sources/Overlay.swift",
+                content: "let source = \"overlay\""
+            )
+        )
+        try await overlayDatabase.indexProject(makeProject(id: "tp-only", title: "Third Party Only"))
+        try await overlayDatabase.indexFile(
+            SampleIndex.File(
+                projectId: "tp-only",
+                path: "Sources/TP.swift",
+                content: "let source = \"third-party\""
+            )
+        )
+
+        #expect(try await service.getProject(id: "shared-sample")?.title == "Shared Primary")
+        #expect(try await service.getProject(id: "tp-only")?.title == "Third Party Only")
+
+        #expect(try await service.getFile(projectId: "shared-sample", path: "Sources/Primary.swift") != nil)
+        #expect(try await service.getFile(projectId: "shared-sample", path: "Sources/Overlay.swift") == nil)
+        #expect(try await service.getFile(projectId: "tp-only", path: "Sources/TP.swift") != nil)
+
+        let sharedFiles = try await service.listFiles(projectId: "shared-sample")
+        #expect(sharedFiles.count == 1)
+        #expect(sharedFiles.first?.path == "Sources/Primary.swift")
+
+        let thirdPartyFiles = try await service.listFiles(projectId: "tp-only")
+        #expect(thirdPartyFiles.count == 1)
+        #expect(thirdPartyFiles.first?.path == "Sources/TP.swift")
+    }
+}
+
+private func makeSampleDatabase(at directory: URL) async throws -> SampleIndex.Database {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let dbPath = directory.appendingPathComponent("samples.db")
+    return try await SampleIndex.Database(dbPath: dbPath)
+}
+
+private func makeProject(id: String, title: String) -> SampleIndex.Project {
+    SampleIndex.Project(
+        id: id,
+        title: title,
+        description: "\(title) sample description",
+        frameworks: ["SwiftUI"],
+        readme: "# \(title)",
+        webURL: "https://example.com/\(id)",
+        zipFilename: "\(id).zip",
+        fileCount: 1,
+        totalSize: 100
+    )
 }
