@@ -198,7 +198,13 @@ struct ThirdPartyManager {
         let markdownFiles = try discoverMarkdownDocuments(in: materialized.rootURL)
         let sampleRoots = try discoverSampleRoots(in: materialized.rootURL)
 
-        let sourceID = existingIndex.map { manifest.installs[$0].id } ?? makeSourceID(identityKey: parsed.identityKey)
+        let previousEntry = existingIndex.map { manifest.installs[$0] }
+        let sourceID: String
+        if effectiveMode == .update {
+            sourceID = makeSourceID(identityKey: "\(parsed.identityKey):\(UUID().uuidString)")
+        } else {
+            sourceID = previousEntry?.id ?? makeSourceID(identityKey: parsed.identityKey)
+        }
         let uriPrefix = "packages://third-party/\(sourceID)/"
         let projectPrefix = "tp-\(sourceID)-"
         let framework = parsed.framework
@@ -225,9 +231,6 @@ struct ThirdPartyManager {
                 await sampleDatabase.disconnect()
             }
         }
-
-        _ = try await searchIndex.deleteDocuments(withURIPrefix: uriPrefix)
-        _ = try await sampleDatabase.deleteProjects(withIdPrefix: projectPrefix)
 
         if !markdownFiles.isEmpty {
             Logging.ConsoleLogger.info("   Indexing fallback markdown docs: \(markdownFiles.count)")
@@ -294,7 +297,7 @@ struct ThirdPartyManager {
                 doccDocsIndexed: doccDocsIndexed,
                 updatedAt: now
             ),
-            installedAt: existingIndex.map { manifest.installs[$0].installedAt } ?? now,
+            installedAt: previousEntry?.installedAt ?? now,
             updatedAt: now
         )
 
@@ -305,6 +308,19 @@ struct ThirdPartyManager {
         }
         manifest.installs.sort { $0.identityKey < $1.identityKey }
         try saveManifest(manifest)
+
+        if effectiveMode == .update,
+           let previousEntry,
+           previousEntry.id != sourceID {
+            do {
+                _ = try await searchIndex.deleteDocuments(withURIPrefix: previousEntry.uriPrefix)
+                _ = try await sampleDatabase.deleteProjects(withIdPrefix: previousEntry.projectPrefix)
+            } catch {
+                Logging.ConsoleLogger.info(
+                    "   Warning: updated install committed, but cleanup for previous prefix failed (\(previousEntry.provenance)): \(error)"
+                )
+            }
+        }
 
         return ThirdPartyOperationResult(
             mode: effectiveMode == .add ? .added : .updated,

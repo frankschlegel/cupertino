@@ -534,6 +534,8 @@ struct ThirdPartyTests {
         #expect(firstAdd.sampleFilesIndexed >= 1)
         #expect(FileManager.default.fileExists(atPath: storeDir.appendingPathComponent("search.db").path))
         #expect(FileManager.default.fileExists(atPath: storeDir.appendingPathComponent("samples.db").path))
+        let installsAfterFirstAdd = try Self.readManifestFullInstalls(from: storeDir)
+        let firstInstall = try #require(installsAfterFirstAdd.first)
 
         do {
             _ = try await manager.add(sourceInput: sourceDir.path)
@@ -562,9 +564,32 @@ struct ThirdPartyTests {
         #expect(updated.docsIndexed == firstAdd.docsIndexed)
         #expect(updated.provenance != firstAdd.provenance)
 
-        let installsAfterUpdate = try Self.readManifestInstalls(from: storeDir)
+        let installsAfterUpdate = try Self.readManifestFullInstalls(from: storeDir)
         #expect(installsAfterUpdate.count == 1)
-        #expect(installsAfterUpdate[0].provenance == updated.provenance)
+        let updatedInstall = try #require(installsAfterUpdate.first)
+        #expect(updatedInstall.provenance == updated.provenance)
+        #expect(updatedInstall.id != firstInstall.id)
+        #expect(updatedInstall.uriPrefix != firstInstall.uriPrefix)
+        #expect(updatedInstall.projectPrefix != firstInstall.projectPrefix)
+
+        try "# Guide gamma\n\nmarker-gamma\n"
+            .write(
+                to: sourceDir.appendingPathComponent("docs/guide.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let secondUpdate = try await manager.update(sourceInput: sourceDir.path)
+        #expect(secondUpdate.docsIndexed == firstAdd.docsIndexed)
+        #expect(secondUpdate.provenance != updated.provenance)
+
+        let installsAfterSecondUpdate = try Self.readManifestFullInstalls(from: storeDir)
+        #expect(installsAfterSecondUpdate.count == 1)
+        let secondUpdatedInstall = try #require(installsAfterSecondUpdate.first)
+        #expect(secondUpdatedInstall.provenance == secondUpdate.provenance)
+        #expect(secondUpdatedInstall.id != updatedInstall.id)
+        #expect(secondUpdatedInstall.uriPrefix != updatedInstall.uriPrefix)
+        #expect(secondUpdatedInstall.projectPrefix != updatedInstall.projectPrefix)
 
         let removed = try await manager.remove(sourceInput: sourceDir.path)
         #expect(removed.deletedDocs >= 2)
