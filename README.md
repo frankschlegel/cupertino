@@ -10,6 +10,8 @@ A Swift-based tool to crawl, index, and serve Apple's developer documentation to
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-blue)](https://www.pulsemcp.com/servers/mihaelamj-cupertino)
 [![LobeHub](https://img.shields.io/badge/LobeHub-listed-purple)](https://lobehub.com/mcp/mihaelamj-cupertino)
 
+> **🗺️ Roadmap:** [#183 — bugs → recrawl → vector → tutor](https://github.com/mihaelamj/cupertino/issues/183) · [milestone progress](https://github.com/mihaelamj/cupertino/milestone/1)
+
 ![Cupertino Demo](docs/images/cupertino.gif)
 
 ## What is Cupertino?
