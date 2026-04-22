@@ -1485,6 +1485,77 @@ struct ThirdPartyOverlayIntegrationTests {
 
         await index.disconnect()
     }
+
+    @Test("Semantic MCP symbol search merges primary and overlay indexes")
+    func semanticSymbolSearchMergesPrimaryAndOverlayIndexes() async throws {
+        let (coreIndex, coreCleanup) = try await createTestSearchIndex()
+        defer { try? coreCleanup() }
+        let (overlayIndex, overlayCleanup) = try await createTestSearchIndex()
+        defer { try? overlayCleanup() }
+
+        let coreItem = SourceItem(
+            uri: "packages://core/acme-routing/symbols",
+            source: Shared.Constants.SourcePrefix.packages,
+            title: "Core Symbol Docs",
+            content: """
+            import Foundation
+
+            public struct CoreRouteHandler {
+                public init() {}
+
+                public func coreRoute() async {}
+            }
+            """,
+            filePath: "/test/core-symbols.swift",
+            contentHash: "core-symbols-hash",
+            framework: "acme-routing",
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+        try await coreIndex.indexItem(coreItem)
+
+        let overlayItem = SourceItem(
+            uri: "packages://overlay/acme-routing/symbols",
+            source: Shared.Constants.SourcePrefix.packages,
+            title: "Overlay Symbol Docs",
+            content: """
+            import Foundation
+
+            public struct OverlayRouteHandler {
+                public init() {}
+
+                public func overlayRoute() async {}
+            }
+            """,
+            filePath: "/test/overlay-symbols.swift",
+            contentHash: "overlay-symbols-hash",
+            framework: "acme-routing",
+            sourceType: Shared.Constants.SourcePrefix.packages
+        )
+        try await overlayIndex.indexItem(overlayItem)
+
+        let provider = CompositeToolProvider(
+            searchIndex: coreIndex,
+            overlaySearchIndex: overlayIndex,
+            sampleDatabase: nil
+        )
+        let args: [String: AnyCodable] = [
+            "query": AnyCodable("RouteHandler"),
+            "limit": AnyCodable(10),
+        ]
+
+        let result = try await provider.callTool(name: "search_symbols", arguments: args)
+
+        if case let .text(textContent) = result.content.first {
+            let markdown = textContent.text
+            #expect(markdown.contains("packages://core/acme-routing/symbols"))
+            #expect(markdown.contains("packages://overlay/acme-routing/symbols"))
+            #expect(markdown.contains("CoreRouteHandler"))
+            #expect(markdown.contains("OverlayRouteHandler"))
+        }
+
+        await coreIndex.disconnect()
+        await overlayIndex.disconnect()
+    }
 }
 
 private extension String {

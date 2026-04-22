@@ -788,7 +788,7 @@ public actor CompositeToolProvider: ToolProvider {
     // MARK: - Semantic Search Handlers (#81)
 
     private func handleSearchSymbols(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let searchIndex else {
+        guard searchIndex != nil else {
             throw ToolError.invalidArgument("index", "Documentation index not available")
         }
 
@@ -798,13 +798,15 @@ public actor CompositeToolProvider: ToolProvider {
         let framework = args.optional(Shared.Constants.Search.schemaParamFramework)
         let limit = args.limit()
 
-        let results = try await searchIndex.searchSymbols(
-            query: query,
-            kind: kind,
-            isAsync: isAsync,
-            framework: framework,
-            limit: limit
-        )
+        let results = try await mergedSemanticResults(limit: limit) { index, requestedLimit in
+            try await index.searchSymbols(
+                query: query,
+                kind: kind,
+                isAsync: isAsync,
+                framework: framework,
+                limit: requestedLimit
+            )
+        }
 
         let markdown = formatSymbolResults(
             results: results,
@@ -817,7 +819,7 @@ public actor CompositeToolProvider: ToolProvider {
     }
 
     private func handleSearchPropertyWrappers(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let searchIndex else {
+        guard searchIndex != nil else {
             throw ToolError.invalidArgument("index", "Documentation index not available")
         }
 
@@ -825,11 +827,13 @@ public actor CompositeToolProvider: ToolProvider {
         let framework = args.optional(Shared.Constants.Search.schemaParamFramework)
         let limit = args.limit()
 
-        let results = try await searchIndex.searchPropertyWrappers(
-            wrapper: wrapper,
-            framework: framework,
-            limit: limit
-        )
+        let results = try await mergedSemanticResults(limit: limit) { index, requestedLimit in
+            try await index.searchPropertyWrappers(
+                wrapper: wrapper,
+                framework: framework,
+                limit: requestedLimit
+            )
+        }
 
         let normalizedWrapper = wrapper.hasPrefix("@") ? wrapper : "@\(wrapper)"
         let markdown = formatSymbolResults(
@@ -843,7 +847,7 @@ public actor CompositeToolProvider: ToolProvider {
     }
 
     private func handleSearchConcurrency(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let searchIndex else {
+        guard searchIndex != nil else {
             throw ToolError.invalidArgument("index", "Documentation index not available")
         }
 
@@ -851,11 +855,13 @@ public actor CompositeToolProvider: ToolProvider {
         let framework = args.optional(Shared.Constants.Search.schemaParamFramework)
         let limit = args.limit()
 
-        let results = try await searchIndex.searchConcurrencyPatterns(
-            pattern: pattern,
-            framework: framework,
-            limit: limit
-        )
+        let results = try await mergedSemanticResults(limit: limit) { index, requestedLimit in
+            try await index.searchConcurrencyPatterns(
+                pattern: pattern,
+                framework: framework,
+                limit: requestedLimit
+            )
+        }
 
         let markdown = formatSymbolResults(
             results: results,
@@ -868,7 +874,7 @@ public actor CompositeToolProvider: ToolProvider {
     }
 
     private func handleSearchConformances(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let searchIndex else {
+        guard searchIndex != nil else {
             throw ToolError.invalidArgument("index", "Documentation index not available")
         }
 
@@ -876,11 +882,13 @@ public actor CompositeToolProvider: ToolProvider {
         let framework = args.optional(Shared.Constants.Search.schemaParamFramework)
         let limit = args.limit()
 
-        let results = try await searchIndex.searchConformances(
-            protocolName: protocolName,
-            framework: framework,
-            limit: limit
-        )
+        let results = try await mergedSemanticResults(limit: limit) { index, requestedLimit in
+            try await index.searchConformances(
+                protocolName: protocolName,
+                framework: framework,
+                limit: requestedLimit
+            )
+        }
 
         let markdown = formatSymbolResults(
             results: results,
@@ -890,6 +898,49 @@ public actor CompositeToolProvider: ToolProvider {
         )
 
         return CallToolResult(content: [.text(TextContent(text: markdown))])
+    }
+
+    private func mergedSemanticResults(
+        limit: Int,
+        search: (Search.Index, Int) async throws -> [Search.Index.SymbolSearchResult]
+    ) async throws -> [Search.Index.SymbolSearchResult] {
+        guard let searchIndex else {
+            return []
+        }
+
+        let primaryResults = try await search(searchIndex, limit)
+        guard let overlaySearchIndex else {
+            return primaryResults
+        }
+
+        let overlayResults: [Search.Index.SymbolSearchResult]
+        do {
+            overlayResults = try await search(overlaySearchIndex, limit)
+        } catch {
+            return primaryResults
+        }
+
+        var seenKeys: Set<String> = []
+        var merged: [Search.Index.SymbolSearchResult] = []
+        merged.reserveCapacity(min(limit, primaryResults.count + overlayResults.count))
+
+        for result in primaryResults + overlayResults {
+            let key = [
+                result.docUri,
+                result.symbolName,
+                result.symbolKind,
+                result.signature ?? "",
+            ].joined(separator: "|")
+
+            if seenKeys.insert(key).inserted {
+                merged.append(result)
+                if merged.count == limit {
+                    break
+                }
+            }
+        }
+
+        return merged
     }
 
     /// Format symbol search results as markdown
