@@ -156,7 +156,7 @@ extension Shared {
             public static let userAgent = "CupertinoCrawler/1.0"
 
             /// Current version
-            public static let version = "0.10.0"
+            public static let version = "0.10.1"
 
             /// Database version - separate from CLI version, only bump when schema/content changes
             public static let databaseVersion = "0.9.0"

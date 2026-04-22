@@ -1,3 +1,11 @@
+## 0.10.1 (2026-04-23)
+
+### Fixed
+- **Homebrew resource bundle lookup** (#161): `fetch --type package-docs` and `fetch --type archive` crashed on fresh Homebrew installs with `Fatal error: could not load resource bundle`. Root cause: SPM's `Bundle.module` resolves via `Bundle.main.bundleURL`, which does not resolve symlinks, so `/opt/homebrew/bin/cupertino` pointed the lookup at `/opt/homebrew/bin/Cupertino_Resources.bundle` rather than the Cellar. `CupertinoResources.bundle` now resolves the executable URL's symlinks before looking up the resource bundle, independent of the formula's `post_install` symlink. Landed in `b9bc70a` shortly after the v0.10.0 tag; this release is the first to ship it.
+- **`fetch --type package-docs` honours user selections** (#107): `PriorityPackagesCatalog` read `~/.cupertino/selected-packages.json` when present but never created it, so the bundled catalog was used even when the TUI had been run. First access now copies the bundled `priority-packages.json` to the user location so subsequent edits (TUI or manual) take effect immediately, matching the `ArchiveGuideCatalog` pattern.
+
+---
+
 ## 0.9.1 (2026-01-25)
 
 ### Added
