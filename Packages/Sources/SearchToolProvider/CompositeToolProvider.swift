@@ -18,18 +18,23 @@ public actor CompositeToolProvider: ToolProvider {
     private let searchIndex: Search.Index?
     private let overlaySearchIndex: Search.Index?
     private let sampleDatabase: SampleIndex.Database?
+    private let overlaySampleDatabase: SampleIndex.Database?
 
     public init(
         searchIndex: Search.Index?,
         overlaySearchIndex: Search.Index? = nil,
-        sampleDatabase: SampleIndex.Database?
+        sampleDatabase: SampleIndex.Database?,
+        overlaySampleDatabase: SampleIndex.Database? = nil
     ) {
         let effectivePrimary = searchIndex ?? overlaySearchIndex
         let effectiveOverlay = searchIndex == nil ? nil : overlaySearchIndex
+        let effectivePrimarySample = sampleDatabase ?? overlaySampleDatabase
+        let effectiveOverlaySample = sampleDatabase == nil ? nil : overlaySampleDatabase
 
         self.searchIndex = effectivePrimary
         self.overlaySearchIndex = effectiveOverlay
-        self.sampleDatabase = sampleDatabase
+        self.sampleDatabase = effectivePrimarySample
+        self.overlaySampleDatabase = effectiveOverlaySample
 
         // Wrap databases with services for search operations
         if let effectivePrimary {
@@ -38,8 +43,11 @@ public actor CompositeToolProvider: ToolProvider {
             docsService = nil
         }
 
-        if let sampleDatabase {
-            sampleService = SampleSearchService(database: sampleDatabase)
+        if let effectivePrimarySample {
+            sampleService = SampleSearchService(
+                database: effectivePrimarySample,
+                overlayDatabase: effectiveOverlaySample
+            )
         } else {
             sampleService = nil
         }
@@ -181,7 +189,7 @@ public actor CompositeToolProvider: ToolProvider {
         ]
 
         // Unified search tool
-        if docsService != nil || sampleDatabase != nil {
+        if docsService != nil || sampleService != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolSearch,
                 description: Shared.Constants.Search.toolSearchDescription,
@@ -211,7 +219,7 @@ public actor CompositeToolProvider: ToolProvider {
         }
 
         // Sample code tools
-        if sampleDatabase != nil {
+        if sampleService != nil {
             allTools.append(Tool(
                 name: Shared.Constants.Search.toolListSamples,
                 description: Shared.Constants.Search.toolListSamplesDescription,
@@ -499,7 +507,8 @@ public actor CompositeToolProvider: ToolProvider {
         let teaserService = TeaserService(
             searchIndex: searchIndex,
             overlaySearchIndex: overlaySearchIndex,
-            sampleDatabase: sampleDatabase
+            sampleDatabase: sampleDatabase,
+            overlaySampleDatabase: overlaySampleDatabase
         )
         return await teaserService.fetchAllTeasers(
             query: query,
@@ -591,7 +600,8 @@ public actor CompositeToolProvider: ToolProvider {
         let unifiedService = UnifiedSearchService(
             searchIndex: searchIndex,
             overlaySearchIndex: overlaySearchIndex,
-            sampleDatabase: sampleDatabase
+            sampleDatabase: sampleDatabase,
+            overlaySampleDatabase: overlaySampleDatabase
         )
         let input = await unifiedService.searchAll(
             query: query,
@@ -651,16 +661,16 @@ public actor CompositeToolProvider: ToolProvider {
     // MARK: - Sample Code Tools
 
     private func handleListSamples(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let sampleDatabase else {
-            throw ToolError.invalidArgument("database", "Sample code database not available")
+        guard let sampleService else {
+            throw ToolError.invalidArgument("service", "Sample code database not available")
         }
 
         let framework = args.optional(Shared.Constants.Search.schemaParamFramework)
         let limit = args.limit(default: 50)
 
-        let projects = try await sampleDatabase.listProjects(framework: framework, limit: limit)
-        let totalProjects = try await sampleDatabase.projectCount()
-        let totalFiles = try await sampleDatabase.fileCount()
+        let projects = try await sampleService.listProjects(framework: framework, limit: limit)
+        let totalProjects = try await sampleService.projectCount()
+        let totalFiles = try await sampleService.fileCount()
 
         var markdown = "# Indexed Sample Code Projects\n\n"
         markdown += "Total projects: **\(totalProjects)**\n"
@@ -690,13 +700,13 @@ public actor CompositeToolProvider: ToolProvider {
     }
 
     private func handleReadSample(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let sampleDatabase else {
-            throw ToolError.invalidArgument("database", "Sample code database not available")
+        guard let sampleService else {
+            throw ToolError.invalidArgument("service", "Sample code database not available")
         }
 
         let projectId: String = try args.require(Shared.Constants.Search.schemaParamProjectId)
 
-        guard let project = try await sampleDatabase.getProject(id: projectId) else {
+        guard let project = try await sampleService.getProject(id: projectId) else {
             throw ToolError.invalidArgument(
                 Shared.Constants.Search.schemaParamProjectId,
                 "Project not found: \(projectId)"
@@ -727,7 +737,7 @@ public actor CompositeToolProvider: ToolProvider {
         }
 
         // List some files
-        let files = try await sampleDatabase.listFiles(projectId: projectId)
+        let files = try await sampleService.listFiles(projectId: projectId)
         if !files.isEmpty {
             markdown += "## Files (\(files.count) total)\n\n"
             for file in files.prefix(30) {
@@ -744,14 +754,14 @@ public actor CompositeToolProvider: ToolProvider {
     }
 
     private func handleReadSampleFile(args: ArgumentExtractor) async throws -> CallToolResult {
-        guard let sampleDatabase else {
-            throw ToolError.invalidArgument("database", "Sample code database not available")
+        guard let sampleService else {
+            throw ToolError.invalidArgument("service", "Sample code database not available")
         }
 
         let projectId: String = try args.require(Shared.Constants.Search.schemaParamProjectId)
         let filePath: String = try args.require(Shared.Constants.Search.schemaParamFilePath)
 
-        guard let file = try await sampleDatabase.getFile(projectId: projectId, path: filePath) else {
+        guard let file = try await sampleService.getFile(projectId: projectId, path: filePath) else {
             throw ToolError.invalidArgument(
                 Shared.Constants.Search.schemaParamFilePath,
                 "File not found: \(filePath) in project \(projectId)"

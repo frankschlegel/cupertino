@@ -35,7 +35,10 @@ struct ReadSampleCommand: AsyncParsableCommand {
         let dbPath = resolveSampleDbPath()
 
         // Use ServiceContainer for managed lifecycle
-        let (project, files) = try await ServiceContainer.withSampleService(dbPath: dbPath) { service in
+        let (project, files) = try await ServiceContainer.withSampleService(
+            dbPath: dbPath,
+            customSamplePathArgument: sampleDb
+        ) { service in
             guard let project = try await service.getProject(id: projectId) else {
                 Log.error("Project not found: \(projectId)")
                 Log.output("Use 'cupertino list-samples' or 'cupertino search-samples' to find valid project IDs.")

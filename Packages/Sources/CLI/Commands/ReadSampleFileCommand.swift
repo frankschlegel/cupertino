@@ -38,7 +38,10 @@ struct ReadSampleFileCommand: AsyncParsableCommand {
         let dbPath = resolveSampleDbPath()
 
         // Use ServiceContainer for managed lifecycle
-        let file = try await ServiceContainer.withSampleService(dbPath: dbPath) { service in
+        let file = try await ServiceContainer.withSampleService(
+            dbPath: dbPath,
+            customSamplePathArgument: sampleDb
+        ) { service in
             guard let file = try await service.getFile(projectId: projectId, path: filePath) else {
                 Log.error("File not found: \(filePath) in project \(projectId)")
                 Log.output("Use 'cupertino read-sample \(projectId)' to list available files.")

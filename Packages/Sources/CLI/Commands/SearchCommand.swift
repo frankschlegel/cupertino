@@ -171,7 +171,8 @@ struct SearchCommand: AsyncParsableCommand {
         // Fetch teaser results from all sources user didn't search
         let teasers = try await ServiceContainer.withTeaserService(
             searchDbPath: searchDb,
-            sampleDbPath: resolveSampleDbPath()
+            sampleDbPath: resolveSampleDbPath(),
+            sampleDbPathArgument: sampleDb
         ) { service in
             await service.fetchAllTeasers(
                 query: query,
@@ -218,7 +219,10 @@ struct SearchCommand: AsyncParsableCommand {
     private func runSampleSearch() async throws {
         let dbPath = resolveSampleDbPath()
 
-        let result = try await ServiceContainer.withSampleService(dbPath: dbPath) { service in
+        let result = try await ServiceContainer.withSampleService(
+            dbPath: dbPath,
+            customSamplePathArgument: sampleDb
+        ) { service in
             try await service.search(SampleQuery(
                 text: query,
                 framework: framework,
@@ -230,7 +234,8 @@ struct SearchCommand: AsyncParsableCommand {
         // Fetch teaser results from other sources
         let teasers = try await ServiceContainer.withTeaserService(
             searchDbPath: searchDb,
-            sampleDbPath: resolveSampleDbPath()
+            sampleDbPath: resolveSampleDbPath(),
+            sampleDbPathArgument: sampleDb
         ) { service in
             await service.fetchAllTeasers(
                 query: query,
@@ -271,7 +276,8 @@ struct SearchCommand: AsyncParsableCommand {
         // Fetch teaser results from other sources
         let teasers = try await ServiceContainer.withTeaserService(
             searchDbPath: searchDb,
-            sampleDbPath: resolveSampleDbPath()
+            sampleDbPath: resolveSampleDbPath(),
+            sampleDbPathArgument: sampleDb
         ) { service in
             await service.fetchAllTeasers(
                 query: query,
@@ -302,7 +308,8 @@ struct SearchCommand: AsyncParsableCommand {
         // Use UnifiedSearchService to search all 8 sources
         let input = try await ServiceContainer.withUnifiedSearchService(
             searchDbPath: searchDb,
-            sampleDbPath: resolveSampleDbPath()
+            sampleDbPath: resolveSampleDbPath(),
+            sampleDbPathArgument: sampleDb
         ) { service in
             await service.searchAll(
                 query: query,

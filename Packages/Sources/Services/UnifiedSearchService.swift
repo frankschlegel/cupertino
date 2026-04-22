@@ -9,27 +9,39 @@ import Shared
 /// Consolidates search logic previously duplicated between CLI and MCP.
 public actor UnifiedSearchService {
     private let docsService: DocsSearchService?
-    private let sampleDatabase: SampleIndex.Database?
+    private let sampleService: SampleSearchService?
 
     /// Initialize with existing database connections
     public init(
         searchIndex: Search.Index?,
         overlaySearchIndex: Search.Index? = nil,
-        sampleDatabase: SampleIndex.Database?
+        sampleDatabase: SampleIndex.Database?,
+        overlaySampleDatabase: SampleIndex.Database? = nil
     ) {
         if let searchIndex {
             docsService = DocsSearchService(index: searchIndex, overlayIndex: overlaySearchIndex)
         } else {
             docsService = nil
         }
-        self.sampleDatabase = sampleDatabase
+
+        let effectivePrimarySample = sampleDatabase ?? overlaySampleDatabase
+        let effectiveOverlaySample = sampleDatabase == nil ? nil : overlaySampleDatabase
+        if let effectivePrimarySample {
+            sampleService = SampleSearchService(
+                database: effectivePrimarySample,
+                overlayDatabase: effectiveOverlaySample
+            )
+        } else {
+            sampleService = nil
+        }
     }
 
     /// Initialize with database paths (creates connections)
     public init(
         searchDbPath: URL?,
         overlaySearchDbPath: URL?,
-        sampleDbPath: URL?
+        sampleDbPath: URL?,
+        overlaySampleDbPath: URL?
     ) async throws {
         let primarySearchIndex: Search.Index?
         if let searchDbPath, PathResolver.exists(searchDbPath) {
@@ -51,10 +63,29 @@ public actor UnifiedSearchService {
             docsService = nil
         }
 
+        let primarySampleDatabase: SampleIndex.Database?
         if let sampleDbPath, PathResolver.exists(sampleDbPath) {
-            sampleDatabase = try await SampleIndex.Database(dbPath: sampleDbPath)
+            primarySampleDatabase = try await SampleIndex.Database(dbPath: sampleDbPath)
         } else {
-            sampleDatabase = nil
+            primarySampleDatabase = nil
+        }
+
+        let overlaySampleDatabase: SampleIndex.Database?
+        if let overlaySampleDbPath, PathResolver.exists(overlaySampleDbPath) {
+            overlaySampleDatabase = try await SampleIndex.Database(dbPath: overlaySampleDbPath)
+        } else {
+            overlaySampleDatabase = nil
+        }
+
+        let effectivePrimarySample = primarySampleDatabase ?? overlaySampleDatabase
+        let effectiveOverlaySample = primarySampleDatabase == nil ? nil : overlaySampleDatabase
+        if let effectivePrimarySample {
+            sampleService = SampleSearchService(
+                database: effectivePrimarySample,
+                overlayDatabase: effectiveOverlaySample
+            )
+        } else {
+            sampleService = nil
         }
     }
 
@@ -167,14 +198,16 @@ public actor UnifiedSearchService {
         framework: String?,
         limit: Int
     ) async -> [SampleIndex.Project] {
-        guard let sampleDatabase else { return [] }
+        guard let sampleService else { return [] }
 
         do {
-            return try await sampleDatabase.searchProjects(
-                query: query,
+            let result = try await sampleService.search(SampleQuery(
+                text: query,
                 framework: framework,
+                searchFiles: false,
                 limit: limit
-            )
+            ))
+            return result.projects
         } catch {
             return []
         }
@@ -196,6 +229,7 @@ extension ServiceContainer {
     public static func withUnifiedSearchService<T: Sendable>(
         searchDbPath: String? = nil,
         sampleDbPath: URL? = nil,
+        sampleDbPathArgument: String? = nil,
         operation: (UnifiedSearchService) async throws -> T
     ) async throws -> T {
         let resolvedSearchPath = PathResolver.searchDatabase(searchDbPath)
@@ -217,10 +251,28 @@ extension ServiceContainer {
             overlaySearchPath = nil
         }
 
+        let resolvedOverlaySamplePath = ServiceContainer.resolveOverlaySamplePath(
+            primarySamplePath: resolvedSamplePath,
+            customSamplePathArgument: sampleDbPathArgument
+        )
+        let primarySamplePath: URL?
+        let overlaySamplePath: URL?
+        if PathResolver.exists(resolvedSamplePath) {
+            primarySamplePath = resolvedSamplePath
+            overlaySamplePath = resolvedOverlaySamplePath
+        } else if let resolvedOverlaySamplePath {
+            primarySamplePath = resolvedOverlaySamplePath
+            overlaySamplePath = nil
+        } else {
+            primarySamplePath = nil
+            overlaySamplePath = nil
+        }
+
         let service = try await UnifiedSearchService(
             searchDbPath: primarySearchPath,
             overlaySearchDbPath: overlaySearchPath,
-            sampleDbPath: PathResolver.exists(resolvedSamplePath) ? resolvedSamplePath : nil
+            sampleDbPath: primarySamplePath,
+            overlaySampleDbPath: overlaySamplePath
         )
 
         return try await operation(service)

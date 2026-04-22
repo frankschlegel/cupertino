@@ -51,13 +51,15 @@ struct ServeCommand: AsyncParsableCommand {
         let evolutionURL = Shared.Constants.defaultSwiftEvolutionDirectory
         let searchDBURL = Shared.Constants.defaultSearchDatabase
         let overlaySearchDBURL = Shared.Constants.defaultThirdPartySearchDatabase
+        let overlaySampleDBURL = Shared.Constants.defaultThirdPartySamplesDatabase
 
         // Check if there's anything to serve
         let hasData = checkForData(
             docsDir: config.crawler.outputDirectory,
             evolutionDir: evolutionURL,
             searchDB: searchDBURL,
-            overlaySearchDB: overlaySearchDBURL
+            overlaySearchDB: overlaySearchDBURL,
+            overlaySampleDB: overlaySampleDBURL
         )
 
         if !hasData {
@@ -72,14 +74,16 @@ struct ServeCommand: AsyncParsableCommand {
             config: config,
             evolutionURL: evolutionURL,
             searchDBURL: searchDBURL,
-            overlaySearchDBURL: overlaySearchDBURL
+            overlaySearchDBURL: overlaySearchDBURL,
+            overlaySampleDBURL: overlaySampleDBURL
         )
 
         printStartupMessages(
             config: config,
             evolutionURL: evolutionURL,
             searchDBURL: searchDBURL,
-            overlaySearchDBURL: overlaySearchDBURL
+            overlaySearchDBURL: overlaySearchDBURL,
+            overlaySampleDBURL: overlaySampleDBURL
         )
 
         let transport = StdioTransport()
@@ -96,7 +100,8 @@ struct ServeCommand: AsyncParsableCommand {
         config: Shared.Configuration,
         evolutionURL: URL,
         searchDBURL: URL,
-        overlaySearchDBURL: URL
+        overlaySearchDBURL: URL,
+        overlaySampleDBURL: URL
     ) async {
         // Initialize search index if available
         let searchIndex: Search.Index? = await loadSearchIndex(searchDBURL: searchDBURL)
@@ -114,14 +119,20 @@ struct ServeCommand: AsyncParsableCommand {
         )
         await server.registerResourceProvider(resourceProvider)
 
-        // Initialize sample code index if available
-        let sampleIndex = await loadSampleIndex()
+        // Initialize sample code indexes if available
+        let sampleIndex = await loadSampleIndex(sampleDBURL: SampleIndex.defaultDatabasePath)
+        let overlaySampleIndex = await loadSampleIndex(
+            sampleDBURL: overlaySampleDBURL,
+            description: "third-party sample code",
+            recoveryHint: "Run '\(Shared.Constants.App.commandName) package add <source>' to index third-party samples."
+        )
 
         // Register composite tool provider with both indexes
         let toolProvider = CompositeToolProvider(
             searchIndex: searchIndex,
             overlaySearchIndex: overlaySearchIndex,
-            sampleDatabase: sampleIndex
+            sampleDatabase: sampleIndex,
+            overlaySampleDatabase: overlaySampleIndex
         )
         await server.registerToolProvider(toolProvider)
 
@@ -137,18 +148,30 @@ struct ServeCommand: AsyncParsableCommand {
             let message = "✅ Third-party package search enabled (separate index found)"
             Log.info(message, category: .mcp)
         }
-        if sampleIndex != nil {
+        if sampleIndex != nil || overlaySampleIndex != nil {
             let message = "✅ Sample code search enabled (index found)"
+            Log.info(message, category: .mcp)
+        }
+        if overlaySampleIndex != nil {
+            let message = "✅ Third-party sample search enabled (separate index found)"
             Log.info(message, category: .mcp)
         }
     }
 
-    private func loadSampleIndex() async -> SampleIndex.Database? {
-        let sampleDBURL = SampleIndex.defaultDatabasePath
+    private func loadSampleIndex(
+        sampleDBURL: URL,
+        description: String = "sample code",
+        recoveryHint: String? = nil
+    ) async -> SampleIndex.Database? {
         guard FileManager.default.fileExists(atPath: sampleDBURL.path) else {
-            let infoMsg = "ℹ️  Sample code index not found at: \(sampleDBURL.path)"
-            let cmd = "\(Shared.Constants.App.commandName) index"
-            let hintMsg = "   Sample tools will not be available. Run '\(cmd)' to enable."
+            let infoMsg = "ℹ️  \(description.capitalized) index not found at: \(sampleDBURL.path)"
+            let hintMsg: String
+            if let recoveryHint {
+                hintMsg = "   \(recoveryHint)"
+            } else {
+                let cmd = "\(Shared.Constants.App.commandName) index"
+                hintMsg = "   Sample tools will not be available. Run '\(cmd)' to enable."
+            }
             Log.info("\(infoMsg) \(hintMsg)", category: .mcp)
             return nil
         }
@@ -157,9 +180,14 @@ struct ServeCommand: AsyncParsableCommand {
             let sampleIndex = try await SampleIndex.Database(dbPath: sampleDBURL)
             return sampleIndex
         } catch {
-            let errorMsg = "⚠️  Failed to load sample index: \(error)"
-            let cmd = "\(Shared.Constants.App.commandName) index"
-            let hintMsg = "   Sample tools will not be available. Run '\(cmd)' to create the index."
+            let errorMsg = "⚠️  Failed to load \(description) index: \(error)"
+            let hintMsg: String
+            if let recoveryHint {
+                hintMsg = "   \(recoveryHint)"
+            } else {
+                let cmd = "\(Shared.Constants.App.commandName) index"
+                hintMsg = "   Sample tools will not be available. Run '\(cmd)' to create the index."
+            }
             Log.warning("\(errorMsg) \(hintMsg)", category: .mcp)
             return nil
         }
@@ -204,7 +232,8 @@ struct ServeCommand: AsyncParsableCommand {
         config _: Shared.Configuration,
         evolutionURL _: URL,
         searchDBURL: URL,
-        overlaySearchDBURL: URL
+        overlaySearchDBURL: URL,
+        overlaySampleDBURL: URL
     ) {
         var messages = ["🚀 Cupertino MCP Server starting..."]
 
@@ -221,6 +250,9 @@ struct ServeCommand: AsyncParsableCommand {
         if FileManager.default.fileExists(atPath: sampleDBURL.path) {
             messages.append("   Samples DB: \(sampleDBURL.path)")
         }
+        if FileManager.default.fileExists(atPath: overlaySampleDBURL.path) {
+            messages.append("   Third-party Samples DB: \(overlaySampleDBURL.path)")
+        }
 
         messages.append("   Waiting for client connection...")
 
@@ -233,7 +265,8 @@ struct ServeCommand: AsyncParsableCommand {
         docsDir _: URL,
         evolutionDir _: URL,
         searchDB: URL,
-        overlaySearchDB: URL
+        overlaySearchDB: URL,
+        overlaySampleDB: URL
     ) -> Bool {
         let fileManager = FileManager.default
 
@@ -241,8 +274,9 @@ struct ServeCommand: AsyncParsableCommand {
         let hasSearchDB = fileManager.fileExists(atPath: searchDB.path)
         let hasOverlaySearchDB = fileManager.fileExists(atPath: overlaySearchDB.path)
         let hasSamplesDB = fileManager.fileExists(atPath: SampleIndex.defaultDatabasePath.path)
+        let hasOverlaySamplesDB = fileManager.fileExists(atPath: overlaySampleDB.path)
 
-        return hasSearchDB || hasOverlaySearchDB || hasSamplesDB
+        return hasSearchDB || hasOverlaySearchDB || hasSamplesDB || hasOverlaySamplesDB
     }
 
     private func printGettingStartedGuide() {

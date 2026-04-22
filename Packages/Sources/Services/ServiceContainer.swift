@@ -15,13 +15,17 @@ public actor ServiceContainer {
     private let searchDbPath: URL
     private let overlaySearchDbPath: URL?
     private let sampleDbPath: URL?
+    private let overlaySampleDbPath: URL?
 
     /// Initialize with database paths
     public init(
         searchDbPath: URL = Shared.Constants.defaultSearchDatabase,
         overlaySearchDbPath: URL? = nil,
-        sampleDbPath: URL? = nil
+        sampleDbPath: URL? = nil,
+        overlaySampleDbPath: URL? = nil
     ) {
+        let resolvedSamplePath = sampleDbPath ?? SampleIndex.defaultDatabasePath
+
         self.searchDbPath = searchDbPath
         self.overlaySearchDbPath = overlaySearchDbPath ??
             Self.resolveOverlaySearchPath(
@@ -29,6 +33,25 @@ public actor ServiceContainer {
                 customSearchPathArgument: searchDbPath.standardizedFileURL.path
             )
         self.sampleDbPath = sampleDbPath
+        self.overlaySampleDbPath = overlaySampleDbPath ??
+            Self.resolveOverlaySamplePath(
+                primarySamplePath: resolvedSamplePath,
+                customSamplePathArgument: sampleDbPath?.standardizedFileURL.path
+            )
+    }
+
+    /// Initialize with database paths
+    public init(
+        searchDbPath: URL = Shared.Constants.defaultSearchDatabase,
+        overlaySearchDbPath: URL? = nil,
+        sampleDbPath: URL? = nil
+    ) {
+        self.init(
+            searchDbPath: searchDbPath,
+            overlaySearchDbPath: overlaySearchDbPath,
+            sampleDbPath: sampleDbPath,
+            overlaySampleDbPath: nil
+        )
     }
 
     // MARK: - Service Access
@@ -65,11 +88,26 @@ public actor ServiceContainer {
             return service
         }
 
-        guard let dbPath = sampleDbPath else {
-            throw ToolError.noData("Sample database path not configured")
+        let resolvedPrimaryPath = sampleDbPath ?? SampleIndex.defaultDatabasePath
+        let primaryPath: URL
+        let overlayPath: URL?
+        if PathResolver.exists(resolvedPrimaryPath) {
+            primaryPath = resolvedPrimaryPath
+            overlayPath = overlaySampleDbPath
+        } else if let overlaySampleDbPath {
+            primaryPath = overlaySampleDbPath
+            overlayPath = nil
+        } else {
+            throw ToolError.noData(
+                "Sample database not found at \(resolvedPrimaryPath.path). " +
+                    "Run 'cupertino index' for Apple samples or 'cupertino package add <source>' for third-party samples."
+            )
         }
 
-        let service = try await SampleSearchService(dbPath: dbPath)
+        let service = try await SampleSearchService(
+            dbPath: primaryPath,
+            overlayDbPath: overlayPath
+        )
         sampleService = service
         return service
     }
@@ -159,13 +197,33 @@ public actor ServiceContainer {
     /// Execute an operation with a sample service, handling lifecycle
     public static func withSampleService<T: Sendable>(
         dbPath: URL,
+        customSamplePathArgument: String? = nil,
         operation: (SampleSearchService) async throws -> T
     ) async throws -> T {
-        guard PathResolver.exists(dbPath) else {
-            throw ToolError.noData("Sample database not found at \(dbPath.path). Run 'cupertino index' to build the index.")
+        let resolvedOverlaySamplePath = resolveOverlaySamplePath(
+            primarySamplePath: dbPath,
+            customSamplePathArgument: customSamplePathArgument
+        )
+
+        let primaryPath: URL
+        let overlayPath: URL?
+        if PathResolver.exists(dbPath) {
+            primaryPath = dbPath
+            overlayPath = resolvedOverlaySamplePath
+        } else if let resolvedOverlaySamplePath {
+            primaryPath = resolvedOverlaySamplePath
+            overlayPath = nil
+        } else {
+            throw ToolError.noData(
+                "Sample database not found at \(dbPath.path). " +
+                    "Run 'cupertino index' for Apple samples or 'cupertino package add <source>' for third-party samples."
+            )
         }
 
-        let service = try await SampleSearchService(dbPath: dbPath)
+        let service = try await SampleSearchService(
+            dbPath: primaryPath,
+            overlayDbPath: overlayPath
+        )
         let result = try await operation(service)
         await service.disconnect()
         return result
@@ -186,6 +244,22 @@ public actor ServiceContainer {
         }
 
         let overlayPath = Shared.Constants.defaultThirdPartySearchDatabase
+        return PathResolver.exists(overlayPath) ? overlayPath : nil
+    }
+
+    static func resolveOverlaySamplePath(
+        primarySamplePath: URL,
+        customSamplePathArgument: String?
+    ) -> URL? {
+        let defaultPath = SampleIndex.defaultDatabasePath.standardizedFileURL.path
+        let isUsingDefaultPrimary = customSamplePathArgument == nil ||
+            primarySamplePath.standardizedFileURL.path == defaultPath
+
+        guard isUsingDefaultPrimary else {
+            return nil
+        }
+
+        let overlayPath = Shared.Constants.defaultThirdPartySamplesDatabase
         return PathResolver.exists(overlayPath) ? overlayPath : nil
     }
 }
