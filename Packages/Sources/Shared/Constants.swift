@@ -175,8 +175,20 @@ extension Shared {
             /// Current version
             public static let version = "0.11.0"
 
-            /// Database version - separate from CLI version, only bump when schema/content changes
+            /// Database version - separate from CLI version, only bump when schema/content changes.
+            /// Controls the cupertino-docs release tag that `cupertino setup` downloads from.
             public static let databaseVersion = "0.9.0"
+
+            /// Packages-index version — separate from `databaseVersion` because the package DB
+            /// is sourced from a different repo (`mihaelamj/cupertino-packages`) with its own
+            /// re-crawl cadence. Bump when `packages.db` content or schema changes.
+            public static let packagesIndexVersion = "0.1.0"
+
+            /// Base URL for cupertino-docs release downloads (search.db + samples.db).
+            public static let docsReleaseBaseURL = "https://github.com/mihaelamj/cupertino-docs/releases/download"
+
+            /// Base URL for cupertino-packages release downloads (packages.db).
+            public static let packagesReleaseBaseURL = "https://github.com/mihaelamj/cupertino-packages/releases/download"
 
             /// Approximate database zip file size for progress display when Content-Length is unknown.
             /// NOTE: Update this after each database release (current: v0.9.0 ~400MB)
