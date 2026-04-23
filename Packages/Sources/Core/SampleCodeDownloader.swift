@@ -406,6 +406,11 @@ public final class SampleCodeDownloader {
         // Use `NSApplication.shared` rather than `NSApp`: in a bare Swift CLI,
         // `NSApp` is an implicitly-unwrapped nil until `.shared` materializes it.
         NSApplication.shared.setActivationPolicy(Self.authFlowActivationPolicy)
+
+        // Call `finishLaunching()` explicitly — `NSApplication.run()` normally
+        // does this, but we don't use `.run()`. Without it the CA runloop
+        // observer that commits WKWebView layers isn't attached.
+        NSApplication.shared.finishLaunching()
         defer { NSApplication.shared.setActivationPolicy(.prohibited) }
 
         // Explicit config so the auth WebView uses the persistent cookie jar.
@@ -504,12 +509,6 @@ public final class SampleCodeDownloader {
     /// Races three signals: (1) WebView navigation reports an Apple session
     /// cookie present, (2) the user presses Enter at the prompt, (3) the user
     /// closes the auth window. Returns whichever fires first.
-    ///
-    /// Takes the URL it will load so the delegate is wired up BEFORE
-    /// `webView.load(...)` fires. Without that ordering, the initial
-    /// navigation's success/failure is invisible to the delegate (#6
-    /// deep-dive: that's why an empty window couldn't surface any
-    /// diagnostic).
     @MainActor
     private static func awaitAuthOutcome(
         webView: WKWebView,
@@ -528,8 +527,6 @@ public final class SampleCodeDownloader {
                     if readLine() != nil {
                         await MainActor.run { coordinator.userPressedEnter() }
                     }
-                    // readLine() returning nil means EOF / stdin closed; auto-detect
-                    // and window-close are still viable, so do nothing here.
                 }
             }
 
@@ -544,11 +541,11 @@ public final class SampleCodeDownloader {
             coordinator.onFinish = { [weak coordinator] in
                 NotificationCenter.default.removeObserver(token)
                 webView.navigationDelegate = nil
-                _ = coordinator  // silence warning
+                _ = coordinator
             }
 
             // (1) Kick off the initial navigation AFTER the delegate is wired.
-            webView.load(URLRequest(url: initialURL))
+            _ = webView.load(URLRequest(url: initialURL))
         }
     }
     #endif
@@ -751,6 +748,18 @@ private final class AuthFlowCoordinator: NSObject, WKNavigationDelegate {
     // MARK: WKNavigationDelegate
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Force a render commit. In a Swift CLI host the async/await runloop
+        // doesn't always tick the CoreAnimation observer, so layers can stay
+        // uncomitted even after successful page load. These hints give CA a
+        // deterministic commit point. See followup issue: JSON-endpoint refactor
+        // supersedes this whole path.
+        Task { @MainActor in
+            webView.needsDisplay = true
+            webView.layer?.setNeedsDisplay()
+            webView.window?.displayIfNeeded()
+            CATransaction.flush()
+        }
+
         Task { @MainActor [weak self] in
             let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
             if SampleCodeDownloader.containsAppleSessionCookie(cookies) {
@@ -759,9 +768,6 @@ private final class AuthFlowCoordinator: NSObject, WKNavigationDelegate {
         }
     }
 
-    /// Surface navigation failures so an empty auth window doesn't silently
-    /// leave the user staring at a blank pane. Callers still see the window
-    /// and can retry / close; we just make sure the error lands in the logs.
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         Logging.ConsoleLogger.error("🔐 Auth WebView navigation failed: \(error.localizedDescription)")
     }
