@@ -32,24 +32,31 @@ extension Core {
             }
         }
 
-        /// Return the canonical owner/repo. If the API call fails (rate limit, network
-        /// error, repo deleted), the input is returned unchanged and cached so we don't
-        /// thrash the API on broken seeds.
+        /// Return the canonical owner/repo. Successful lookups (HTTP 200) are cached
+        /// permanently. Transient failures (timeout, 5xx, network blip) return the
+        /// input unchanged but are **not** cached — we'd rather retry on the next run
+        /// than permanently record a wrong identity mapping. A confirmed 404 is
+        /// cached as identity so we don't hammer a known-deleted repo.
         public func canonicalize(owner: String, repo: String) async -> CanonicalName {
             let key = Self.key(owner: owner, repo: repo)
             if let cached = cache[key], let parsed = Self.parse(cached) {
                 return parsed
             }
-            if let canonical = await fetchCanonical(owner: owner, repo: repo) {
+            switch await fetchCanonical(owner: owner, repo: repo) {
+            case .success(let canonical):
                 cache[key] = "\(canonical.owner)/\(canonical.repo)"
                 dirty = true
                 return canonical
+            case .notFound:
+                cache[key] = "\(owner)/\(repo)"
+                dirty = true
+                return CanonicalName(owner: owner, repo: repo)
+            case .transient:
+                // No caching: the next run may well resolve it correctly, and caching
+                // identity here was the root cause of the `apple/` vs `swiftlang/`
+                // duplicates in the initial 0.11.0 smoke test.
+                return CanonicalName(owner: owner, repo: repo)
             }
-            // Cache the failure: "treat input as canonical" — avoids repeat API calls
-            // for repos that 404 / are rate-limited / are temporarily unavailable.
-            cache[key] = "\(owner)/\(repo)"
-            dirty = true
-            return CanonicalName(owner: owner, repo: repo)
         }
 
         /// Flush the in-memory cache to disk. Call once at the end of a resolve so we
@@ -74,29 +81,57 @@ extension Core {
 
         // MARK: - HTTP
 
-        private func fetchCanonical(owner: String, repo: String) async -> CanonicalName? {
-            guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)") else {
-                return nil
+        private enum FetchOutcome {
+            case success(CanonicalName)
+            case notFound        // 404 — confirmed-missing; safe to cache as identity
+            case transient       // timeout / 5xx / network error; do not cache
+        }
+
+        /// Resolve the canonical owner/repo by following GitHub's HTTP redirects on the
+        /// web endpoint. `api.github.com` caps anonymous callers at 60 req/hr, which is
+        /// trivially consumed by a single resolve run; `github.com/<owner>/<repo>`
+        /// redirects without auth and has a far more generous limit in practice.
+        /// URLSession follows the 301/302 chain automatically; the final `response.url`
+        /// is what we parse.
+        private func fetchCanonical(owner: String, repo: String) async -> FetchOutcome {
+            guard let url = URL(string: "https://github.com/\(owner)/\(repo)") else {
+                return .transient
             }
             var request = URLRequest(url: url)
-            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.httpMethod = "HEAD"
             request.setValue(Shared.Constants.App.userAgent, forHTTPHeaderField: "User-Agent")
-            request.timeoutInterval = 15
+            // 30s covers slow TLS handshakes under concurrent load. The previous 10s
+            // was hitting transient timeouts and poisoning the cache; see #184 discussion.
+            request.timeoutInterval = 30
             do {
-                let (data, response) = try await session.data(for: request)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    return nil
+                let (_, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    return .transient
                 }
-                guard
-                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let fullName = json["full_name"] as? String
-                else {
-                    return nil
+                if http.statusCode == 200, let finalURL = response.url,
+                   let parsed = Self.parseGitHubURL(finalURL)
+                {
+                    return .success(parsed)
                 }
-                return Self.parse(fullName)
+                if http.statusCode == 404 {
+                    return .notFound
+                }
+                return .transient
             } catch {
-                return nil
+                return .transient
             }
+        }
+
+        internal static func parseGitHubURL(_ url: URL) -> CanonicalName? {
+            guard url.host?.lowercased() == "github.com" else { return nil }
+            let parts = url.path
+                .split(separator: "/", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard parts.count >= 2 else { return nil }
+            var repo = parts[1]
+            if repo.hasSuffix(".git") { repo.removeLast(4) }
+            guard !parts[0].isEmpty, !repo.isEmpty else { return nil }
+            return CanonicalName(owner: parts[0], repo: repo)
         }
 
         // MARK: - Test hooks

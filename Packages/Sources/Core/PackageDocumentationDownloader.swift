@@ -248,14 +248,18 @@ extension Core {
         }
 
         private func isValidGitHubIdentifier(_ identifier: String) -> Bool {
-            // GitHub usernames and repo names can only contain:
-            // alphanumeric, hyphens, and underscores
-            // No path traversal attempts
-            let allowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+            // GitHub identifier rules (conservative union of owner + repo):
+            //   alphanumeric + "-_.".
+            // `.` is valid in repo names (e.g. `jmespath.swift`, `SwiftyJSON.swift`);
+            // owners use only alphanumeric + hyphen in practice, but allowing `.`
+            // here is safe because `..` is still rejected and `/` can't appear.
+            let allowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
             return identifier.rangeOfCharacter(from: allowedCharacters.inverted) == nil
                 && !identifier.isEmpty
                 && !identifier.contains("..")
                 && !identifier.hasPrefix("/")
+                && !identifier.hasPrefix(".")
+                && !identifier.hasSuffix(".")
         }
 
         // MARK: - Rate Limiting

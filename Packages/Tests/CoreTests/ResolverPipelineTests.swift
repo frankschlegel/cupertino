@@ -365,15 +365,54 @@ func manifestCacheMissSentinel() async throws {
 
 // MARK: - Canonical dedupe
 
+// MARK: - parseGitHubURL (pure helper)
+
+@Test("parseGitHubURL: plain github.com/owner/repo")
+func parseGitHubURLPlain() throws {
+    let url = URL(string: "https://github.com/apple/swift-nio")!
+    let parsed = try #require(Core.GitHubCanonicalizer.parseGitHubURL(url))
+    #expect(parsed.owner == "apple")
+    #expect(parsed.repo == "swift-nio")
+}
+
+@Test("parseGitHubURL: strips trailing .git")
+func parseGitHubURLStripsGitSuffix() throws {
+    let url = URL(string: "https://github.com/apple/swift-nio.git")!
+    let parsed = try #require(Core.GitHubCanonicalizer.parseGitHubURL(url))
+    #expect(parsed.owner == "apple")
+    #expect(parsed.repo == "swift-nio")
+}
+
+@Test("parseGitHubURL: strips tree/branch suffixes")
+func parseGitHubURLStripsExtraPath() throws {
+    let url = URL(string: "https://github.com/apple/swift-nio/tree/main")!
+    let parsed = try #require(Core.GitHubCanonicalizer.parseGitHubURL(url))
+    #expect(parsed.owner == "apple")
+    #expect(parsed.repo == "swift-nio")
+}
+
+@Test("parseGitHubURL: rejects non-github host")
+func parseGitHubURLRejectsOtherHosts() throws {
+    let url = URL(string: "https://gitlab.com/apple/swift-nio")!
+    #expect(Core.GitHubCanonicalizer.parseGitHubURL(url) == nil)
+}
+
+@Test("parseGitHubURL: rejects path with only owner")
+func parseGitHubURLRejectsSingleComponent() throws {
+    let url = URL(string: "https://github.com/apple")!
+    #expect(Core.GitHubCanonicalizer.parseGitHubURL(url) == nil)
+}
+
 // MARK: - Integration (network required)
 
 @Suite("Resolver network integration", .tags(.integration), .serialized)
 struct ResolverNetworkIntegration {
-    /// Canonicaliser must normalise case via GitHub's API (`apple/SWIFT-NIO` → `apple/swift-nio`).
-    /// This is a cheap live-fire check for the redirect lookup; doesn't assume anything
-    /// about packages GitHub may have renamed, just that case-insensitive lookup works.
-    @Test("Canonicalizer: APPLE/SWIFT-NIO normalises via live GitHub API")
-    func canonicalizerNormalisesCase() async throws {
+    /// The reason the canonicaliser exists: catch GitHub renames so `apple/swift-docc`
+    /// and `swiftlang/swift-docc` (same repo via redirect) dedupe into one closure
+    /// entry. Live fire against the real redirect chain. If GitHub ever un-renames
+    /// swift-docc or renames it again this test will drift and signal exactly that.
+    @Test("Canonicalizer: renamed repo follows GitHub's redirect")
+    func canonicalizerFollowsRename() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cupertino-canon-int-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -381,9 +420,9 @@ struct ResolverNetworkIntegration {
         let cacheURL = tempDir.appendingPathComponent("canonical-owners.json")
 
         let canonicalizer = Core.GitHubCanonicalizer(cacheURL: cacheURL)
-        let canonical = await canonicalizer.canonicalize(owner: "APPLE", repo: "SWIFT-NIO")
-        #expect(canonical.owner == "apple")
-        #expect(canonical.repo == "swift-nio")
+        let canonical = await canonicalizer.canonicalize(owner: "apple", repo: "swift-docc")
+        #expect(canonical.owner == "swiftlang")
+        #expect(canonical.repo == "swift-docc")
     }
 
     /// Resolve a single real seed and assert the closure contains its documented
