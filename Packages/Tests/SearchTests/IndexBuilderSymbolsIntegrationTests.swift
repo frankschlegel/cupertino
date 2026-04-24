@@ -74,8 +74,10 @@ private func countDocSymbolRows(at dbPath: URL, uri: String) throws -> Int {
     return Int(sqlite3_column_int(stmt, 0))
 }
 
-/// Build a `StructuredDocumentationPage` JSON fixture whose Swift code
-/// block contains a recognisable symbol (`SampleModel`).
+/// Build a `StructuredDocumentationPage` JSON fixture whose declaration and
+/// code block declare DIFFERENT symbols, so the integration test can verify
+/// both sources flow into the blob (covers #192 D Fix B + the original
+/// code-example pass at the same time).
 private func writeFixtureDoc(framework: String, name: String, into directory: URL) throws -> URL {
     let frameworkDir = directory.appendingPathComponent(framework)
     try FileManager.default.createDirectory(at: frameworkDir, withIntermediateDirectories: true)
@@ -83,10 +85,10 @@ private func writeFixtureDoc(framework: String, name: String, into directory: UR
     let page = StructuredDocumentationPage(
         url: URL(string: "https://developer.apple.com/documentation/\(framework)/\(name)")!,
         title: "Sample page",
-        kind: .struct,
+        kind: .protocol,
         source: .appleJSON,
-        abstract: "An example doc with a Swift code block.",
-        declaration: StructuredDocumentationPage.Declaration(code: "struct SampleModel {}"),
+        abstract: "An example doc with both a declaration and a Swift code block.",
+        declaration: StructuredDocumentationPage.Declaration(code: "public protocol DeclaredProtocol {}"),
         overview: "Overview text.",
         sections: [],
         codeExamples: [
@@ -139,10 +141,11 @@ struct IndexBuilderSymbolsIntegrationTests {
 
         let uri = "apple-docs://swiftui/sample"
         let symbolRows = try countDocSymbolRows(at: dbPath, uri: uri)
-        #expect(symbolRows > 0, "doc_symbols should have at least one row for the fixture page")
+        #expect(symbolRows >= 2, "doc_symbols should hold both the declaration AND code-block symbols")
 
         let blob = try #require(try readSymbolsBlob(at: dbPath, uri: uri))
-        #expect(blob.contains("SampleModel"), "docs_metadata.symbols blob should contain extracted names")
+        #expect(blob.contains("DeclaredProtocol"), "blob must include the declaration-derived symbol (Fix B)")
+        #expect(blob.contains("SampleModel"), "blob must include the code-block-derived symbol")
 
         let ftsHit = try ftsSymbolsMatches(at: dbPath, uri: uri)
         #expect(ftsHit, "docs_fts.symbols should match the extracted symbol via FTS5 MATCH")
