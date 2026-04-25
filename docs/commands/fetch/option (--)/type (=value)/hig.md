@@ -40,9 +40,15 @@ Creates Markdown files with YAML front matter:
 cupertino fetch --type hig
 ```
 
-### Resume Interrupted Download
+### Resume Interrupted Download (automatic)
 ```bash
-cupertino fetch --type hig --resume
+# Auto-resumes from metadata.json — no flag needed
+cupertino fetch --type hig
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type hig --start-clean
 ```
 
 ### Force Re-download

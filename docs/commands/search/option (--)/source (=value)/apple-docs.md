@@ -57,8 +57,9 @@ Examples:
 ## How to Populate
 
 ```bash
-# Full crawl (20-24 hours)
-cupertino fetch --type docs --max-pages 15000
+# Full crawl (multi-day on full corpus, auto-resumable — `cupertino setup` is the
+# fast path for end users; use `fetch` only when re-crawling).
+cupertino fetch --type docs
 
 # Framework-specific crawl
 cupertino fetch --type docs \

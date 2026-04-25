@@ -53,5 +53,5 @@ cupertino fetch --type packages --force --limit 100
 
 - Overwrites existing files without confirmation
 - Can be slower than regular fetch
-- Cannot be combined with `--resume`
-- Resets checkpoint progress
+- Re-fetches every page; combine with `--start-clean` for a true ground-zero rerun
+- Resets per-page change-detection hashes

@@ -65,9 +65,10 @@ phase_end "0/10" "Wipe"
 
 # ---------- 1-7. Web + direct fetches in dependency-friendly order ----------
 phase_start "1/10" "Apple Developer Documentation (largest, ~hours)"
-# `fetch --type docs` is now a two-pass crawl by default: JSON API first
-# (fast), WKWebView second to fill JSON-endpoint gaps. No flags needed —
-# see FetchCommand.runDocsTwoPassCrawl().
+# `fetch --type docs` tries Apple's JSON API per URL and falls back to
+# WKWebView when a page has no JSON endpoint — single pass, all coverage.
+# Auto-resumes from metadata.json if interrupted; pass --start-clean to
+# start over.
 "$BIN" fetch --type docs
 phase_end "1/10" "Apple Developer Documentation"
 

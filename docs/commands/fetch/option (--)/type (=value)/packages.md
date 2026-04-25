@@ -55,9 +55,15 @@ cupertino fetch --type packages --limit 100
 cupertino fetch --type packages --output-dir ./my-packages
 ```
 
-### Resume Interrupted Fetch
+### Resume Interrupted Fetch (automatic)
 ```bash
-cupertino fetch --type packages --resume
+# Auto-resumes from checkpoint.json — no flag needed
+cupertino fetch --type packages
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type packages --start-clean
 ```
 
 ## Output File Structure

@@ -86,11 +86,17 @@ jq '.count' ~/.cupertino/packages/checkpoint.json
 jq '{total: .totalCount, downloaded: .downloadedCount}' ~/.cupertino/sample-code/checkpoint.json
 ```
 
-### Resume Download
+### Resume Download (automatic)
 ```bash
-# Automatically uses checkpoint.json
-cupertino fetch --type packages --resume
-cupertino fetch --type code --authenticate --resume
+# Auto-resumes from checkpoint.json — no flag needed
+cupertino fetch --type packages
+cupertino fetch --type code --authenticate
+```
+
+### Discard the Checkpoint and Start Over
+```bash
+cupertino fetch --type packages --start-clean
+cupertino fetch --type code --authenticate --start-clean
 ```
 
 ### Query Package Data
@@ -104,12 +110,14 @@ jq '.packages | sort_by(-.stars) | .[0:10]' ~/.cupertino/packages/checkpoint.jso
 
 ## Resume Logic
 
-When using `--resume`:
-1. Reads checkpoint.json
+Resume is the default. Each `cupertino fetch` invocation:
+1. Reads checkpoint.json (if present)
 2. Identifies what's already been fetched
 3. Skips those items
 4. Continues from where it left off
 5. Updates checkpoint as it progresses
+
+Pass `--start-clean` to skip step 1 and start a fresh run.
 
 ## Differences by Type
 
@@ -122,7 +130,7 @@ When using `--resume`:
 
 ## Used By
 
-- `cupertino fetch --resume` - Resume functionality
+- `cupertino fetch` - Auto-resume; `--start-clean` overrides
 - Data analysis tools (for packages)
 - Progress monitoring
 

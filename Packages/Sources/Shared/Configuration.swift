@@ -13,7 +13,6 @@ extension Shared {
         public let logFile: URL?
         public let requestDelay: TimeInterval
         public let retryAttempts: Int
-        public let useJSONAPI: Bool
 
         public init(
             startURL: URL = URL(string: Shared.Constants.BaseURL.appleDeveloperDocs)!,
@@ -23,8 +22,7 @@ extension Shared {
             outputDirectory: URL = Shared.Constants.defaultDocsDirectory,
             logFile: URL? = nil,
             requestDelay: TimeInterval = 0.05,
-            retryAttempts: Int = 3,
-            useJSONAPI: Bool = false
+            retryAttempts: Int = 3
         ) {
             self.startURL = startURL
 
@@ -58,7 +56,6 @@ extension Shared {
             self.logFile = logFile
             self.requestDelay = requestDelay
             self.retryAttempts = retryAttempts
-            self.useJSONAPI = useJSONAPI
         }
 
         /// Load configuration from JSON file

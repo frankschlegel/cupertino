@@ -57,11 +57,11 @@ struct FetchCommand: AsyncParsableCommand {
     )
     var allowedPrefixes: String?
 
-    @Flag(name: .long, help: "Force recrawl of all pages")
+    @Flag(name: .long, help: "Force recrawl of all pages (re-fetch even unchanged content)")
     var force: Bool = false
 
-    @Flag(name: .long, help: "Resume from saved session (auto-detects and continues)")
-    var resume: Bool = false
+    @Flag(name: .long, help: "Ignore any saved session and start fresh from the seed URL")
+    var startClean: Bool = false
 
     @Flag(name: .long, inversion: .prefixedNo, help: "Only download accepted/implemented proposals (evolution type only)")
     var onlyAccepted: Bool = true
@@ -71,9 +71,6 @@ struct FetchCommand: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Launch visible browser for authentication (code type only)")
     var authenticate: Bool = false
-
-    @Flag(name: .long, help: "Use Apple's JSON API instead of WKWebView (faster, no memory issues)")
-    var useJsonApi: Bool = false
 
     @Flag(name: .long, help: "Use fast mode (higher concurrency, shorter timeout) for availability fetch")
     var fast: Bool = false
@@ -141,63 +138,15 @@ struct FetchCommand: AsyncParsableCommand {
             return
         }
 
-        // Apple docs default: two-pass (JSON API → WKWebView). Not all Apple
-        // doc pages have a JSON endpoint, so a JSON-only crawl silently drops
-        // the ones that don't. The cheap fix is a second pass with WKWebView
-        // that auto-resumes from the metadata.json the first pass wrote, and
-        // only crawls the URLs the JSON pass didn't cover.
-        //
-        // Bypass conditions (run a single pass instead):
-        //   --use-json-api        explicit "JSON only" override
-        //   --resume              user wants to continue an existing session
-        //   --start-url …         custom crawl, two-pass orchestration would
-        //                         re-init from the wrong URL on pass 2
-        if type == .docs, !useJsonApi, !resume, startURL == nil {
-            try await runDocsTwoPassCrawl()
-            return
-        }
-
         try await runStandardCrawl()
-    }
-
-    /// Two-pass crawl for `--type docs` (the default). Pass 1 forces a fresh
-    /// JSON-API crawl; pass 2 falls back to WKWebView and auto-resumes,
-    /// picking up only the pages the JSON pass couldn't reach.
-    private mutating func runDocsTwoPassCrawl() async throws {
-        Logging.ConsoleLogger.info(
-            "📚 Apple Documentation — two-pass crawl (JSON API → WKWebView fills gaps)\n"
-        )
-
-        let savedUseJsonApi = useJsonApi
-        let savedForce = force
-
-        // Pass 1: JSON API, fresh start. Forces re-fetch even when prior state
-        // exists so the resulting metadata.json reflects only what the JSON
-        // path could see.
-        Logging.ConsoleLogger.info("=== Pass 1/2: JSON API (fast, partial coverage) ===\n")
-        useJsonApi = true
-        force = true
-        try await runStandardCrawl()
-
-        // Pass 2: WKWebView, auto-resume. `force = false` is critical — the
-        // crawler's change-detection skips pages already present from pass 1,
-        // so this run only fills the JSON-endpointless gap.
-        Logging.ConsoleLogger.info("\n=== Pass 2/2: WKWebView (fills JSON-API gaps) ===\n")
-        useJsonApi = false
-        force = false
-        try await runStandardCrawl()
-
-        // Restore caller-visible state in case this command is reused mid-process.
-        useJsonApi = savedUseJsonApi
-        force = savedForce
     }
 
     private func logStartMessage() {
-        if resume {
-            Logging.ConsoleLogger.info("🔄 Cupertino - Resuming from saved session\n")
-        } else {
-            Logging.ConsoleLogger.info("🚀 Cupertino - Fetching \(type.displayName)\n")
-        }
+        // The Crawler auto-resumes whenever metadata.json's crawlState is active
+        // and matches the start URL — no flag needed. We log "Fetching" here
+        // unconditionally; the Crawler itself prints "🔄 Found resumable session"
+        // when it actually loads saved state.
+        Logging.ConsoleLogger.info("🚀 Cupertino - Fetching \(type.displayName)\n")
     }
 
     private mutating func runAllFetches() async throws {
@@ -267,8 +216,30 @@ struct FetchCommand: AsyncParsableCommand {
     private mutating func runStandardCrawl() async throws {
         let url = try validateStartURL()
         let outputDirectory = try await determineOutputDirectory(for: url)
+        if startClean {
+            try Self.clearSavedSession(at: outputDirectory)
+        }
         let config = createConfiguration(url: url, outputDirectory: outputDirectory)
         try await executeCrawl(with: config)
+    }
+
+    /// Wipe `crawlState` from `metadata.json` so the Crawler treats this as a
+    /// fresh run. Page-level state (frameworks, stats, pages dict) is preserved
+    /// — `--force` is what re-fetches existing pages on disk; `--start-clean`
+    /// just discards the queue/visited resume marker.
+    ///
+    /// `internal static` so tests in `CLICommandTests` can exercise it directly
+    /// without parsing a full `FetchCommand` from args.
+    static func clearSavedSession(at outputDirectory: URL) throws {
+        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
+        guard FileManager.default.fileExists(atPath: metadataFile.path) else {
+            Logging.ConsoleLogger.info("🧹 --start-clean: no saved session to clear at \(outputDirectory.path)")
+            return
+        }
+        var metadata = try CrawlMetadata.load(from: metadataFile)
+        metadata.crawlState = nil
+        try metadata.save(to: metadataFile)
+        Logging.ConsoleLogger.info("🧹 --start-clean: cleared saved session at \(metadataFile.path)")
     }
 
     private func validateStartURL() throws -> URL {
@@ -361,8 +332,7 @@ struct FetchCommand: AsyncParsableCommand {
                 allowedPrefixes: prefixes,
                 maxPages: maxPages,
                 maxDepth: maxDepth,
-                outputDirectory: outputDirectory,
-                useJSONAPI: useJsonApi
+                outputDirectory: outputDirectory
             ),
             changeDetection: Shared.ChangeDetectionConfiguration(
                 forceRecrawl: force,
@@ -436,7 +406,7 @@ struct FetchCommand: AsyncParsableCommand {
         let fetcher = Core.PackageFetcher(
             outputDirectory: outputURL,
             limit: limit,
-            resume: resume
+            resume: !startClean
         )
 
         let stats = try await fetcher.fetch { progress in

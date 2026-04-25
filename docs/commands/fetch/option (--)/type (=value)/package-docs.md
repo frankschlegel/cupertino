@@ -100,9 +100,15 @@ cupertino fetch --type package-docs
 cupertino fetch --type package-docs --output-dir ./my-package-docs
 ```
 
-### Resume Interrupted Download
+### Resume Interrupted Download (automatic)
 ```bash
-cupertino fetch --type package-docs --resume
+# Auto-resumes from checkpoint.json — no flag needed
+cupertino fetch --type package-docs
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type package-docs --start-clean
 ```
 
 ### Force Re-download
@@ -196,7 +202,7 @@ If neither `priority-packages.json` nor hardcoded constants contain packages:
 If specific packages fail to download:
 - Error is logged but doesn't stop the entire operation
 - Statistics show error count at completion
-- Failed packages can be retried with `--resume`
+- Failed packages are retried automatically on the next run (resume is the default)
 
 ### Network Errors
 ```

@@ -47,9 +47,15 @@ cupertino fetch --type swift
 cupertino fetch --type swift --max-pages 500
 ```
 
-### Resume Interrupted Crawl
+### Resume Interrupted Crawl (automatic)
 ```bash
-cupertino fetch --type swift --resume
+# Auto-resumes from metadata.json — no flag needed
+cupertino fetch --type swift
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type swift --start-clean
 ```
 
 ### Force Recrawl All Pages

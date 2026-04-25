@@ -41,5 +41,5 @@ cupertino fetch --type packages --limit 100 --output-dir ./test-packages
 ## Notes
 
 - Fetches items in order they appear in source
-- Can be combined with `--resume` to fetch more later
-- Progress is saved in checkpoint, so you can resume to get more
+- Re-running with a larger `--limit` continues from the saved checkpoint (resume is automatic)
+- Pass `--start-clean` to discard the checkpoint and start over

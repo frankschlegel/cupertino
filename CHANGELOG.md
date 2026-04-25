@@ -33,9 +33,11 @@ _The first release we'd call properly stable. Consolidates what was originally s
 - `cupertino setup` is now the **single command** that owns every database. Downloads search.db + samples.db from `cupertino-docs`, then packages.db from `cupertino-packages`. No granularity flag — the previous `cupertino packages-setup` is removed; URL helpers preserved as `PackagesReleaseURL` for tests. Best-effort on the packages download: if the cupertino-packages release isn't tagged yet, setup logs a warning and still completes (cupertino can serve docs without packages.db).
 - `Shared.Constants.App.packagesIndexVersion` + `packagesReleaseBaseURL` + `docsReleaseBaseURL` constants.
 
-**Two-pass docs crawl as default (`fetch --type docs`)**
-- `cupertino fetch --type docs` (no flags) now performs a JSON-API pass (fast, ~90% coverage) followed by a WKWebView pass that auto-resumes from pass 1's `metadata.json`, picking up only the URLs JSON-API couldn't reach. **One of cupertino's coverage advantages over single-pass JSON-only MCPs.**
-- Bypass conditions (single-pass): `--use-json-api` (legacy JSON-only), `--resume` (continue an existing session), `--start-url …` (custom crawl).
+**Per-URL JSON-then-WebView fallback (`fetch --type docs`)**
+- `cupertino fetch --type docs` does a single pass through the queue, trying Apple's JSON API for each URL and falling back to WKWebView when a page has no JSON endpoint. **One of cupertino's coverage advantages over single-pass JSON-only MCPs** — every URL gets a chance at both transports without doubling the queue. (The fallback was already implemented in `Crawler.swift`; the previous "two-pass" orchestration in `FetchCommand` was redundant — it ran the same crawler twice — and is now removed along with the dead `--use-json-api` flag.)
+- **Auto-resume by default**: if `metadata.json` has an active session matching the start URL, `cupertino fetch` picks it up without any flag. The previous `--resume` flag was just a log-message switch and is removed.
+- **`--start-clean`**: new flag. Wipes `metadata.json`'s `crawlState` (queue + visited set) before running so the crawl starts fresh from the seed URL. Page-level state on disk is preserved — combine with `--force` to also re-fetch unchanged pages.
+- **Crash-safe metadata save**: `JSONCoding.encode(_:to:)` now writes with `.atomic` (temp + rename), so a kill mid-save can never leave `metadata.json` corrupt. Mid-save corruption was the one failure mode that could make a multi-day crawl unresumable.
 - `defaultMaxPages` constant raised 15,000 → **1,000,000**. Effectively uncapped for full Apple-corpus crawls (~50–80k pages); previous 15k default would silently truncate at ~15–30% coverage.
 
 **Reproducible re-crawl pipeline (#192 section I scaffolding)**
@@ -75,6 +77,9 @@ _The first release we'd call properly stable. Consolidates what was originally s
 
 - `cupertino setup --force` flag — use `--keep-existing` or the new default-downloads behaviour.
 - `cupertino packages-setup` (hidden) subcommand — collapsed into the unified `cupertino setup`.
+- `cupertino fetch --use-json-api` flag — was never read by the Crawler (per-URL JSON-then-WebView fallback was always unconditional). Dead config; removing it deletes the `useJSONAPI` field from `Shared.CrawlerConfiguration`.
+- `cupertino fetch --resume` flag — auto-resume is the default now. The flag was a log-message switch only, doing nothing functional.
+- `FetchCommand.runDocsTwoPassCrawl()` — ran the same crawler twice (force-fresh, then resume-and-find-nothing). The "two-pass" branding was misleading; the per-URL fallback already gave full coverage in one pass.
 - `Cupertino_Resources.bundle` shipped artifact — no longer generated, no longer copied by `install.sh` / `release.yml` / the Homebrew formula.
 - `SwiftPackagesCatalog.topPackages(limit:)`, `.activePackages(minStars:)`, `.packages(license:)` — relied on metadata fields no longer present on the slimmed URL-only catalog. Metadata-driven queries will come back via `packages.db`.
 

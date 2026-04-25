@@ -52,9 +52,15 @@ cupertino fetch --type docs --max-pages 5000
 cupertino fetch --type docs --start-url https://developer.apple.com/documentation/swiftui
 ```
 
-### Resume Interrupted Crawl
+### Resume Interrupted Crawl (automatic)
 ```bash
-cupertino fetch --type docs --resume
+# Auto-resumes from metadata.json — no flag needed
+cupertino fetch --type docs
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type docs --start-clean
 ```
 
 ### Force Recrawl All Pages

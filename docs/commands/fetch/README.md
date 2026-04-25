@@ -39,8 +39,10 @@ The `fetch` command is the unified fetching command that handles both web crawli
 - `--max-depth` - Maximum crawl depth (default: 15)
 - `--allowed-prefixes` - Comma-separated URL prefixes to allow (auto-detected if not specified)
 - [--force](force.md) - Force recrawl of all pages (ignore change detection)
-- [--resume](resume.md) - Resume from saved session (auto-detects and continues)
+- [--start-clean](start-clean.md) - Ignore any saved session and start fresh from the seed URL
 - `--only-accepted` - Only download accepted/implemented proposals (evolution type only)
+
+> **Resume is automatic.** If a previous `fetch` was interrupted, just re-run the same command — the crawler picks up its `metadata.json` and continues from where it left off. No flag needed. Use `--start-clean` to override and start over.
 
 ### Direct Fetch Options
 
@@ -104,12 +106,19 @@ cupertino fetch --start-url https://developer.apple.com/documentation/swiftui \
                 --output-dir ./my-docs
 ```
 
-### Resume Interrupted Crawl
+### Resume Interrupted Crawl (automatic)
 ```bash
-cupertino fetch --type docs --resume
+# Just re-run the same command — fetch auto-resumes from metadata.json
+cupertino fetch --type docs
 ```
 
-### Force Recrawl
+### Force a Truly Fresh Start
+```bash
+# Clear the saved session AND re-fetch every page
+cupertino fetch --type docs --start-clean --force
+```
+
+### Force Recrawl Without Resetting the Queue
 ```bash
 cupertino fetch --type docs --force
 ```
@@ -154,10 +163,10 @@ Web crawl types use content hashing to detect changes:
 
 ### Session Resume
 
-All types support resuming interrupted operations:
-- **Web crawls**: Saves session state every 100 pages
-- **Direct fetches**: Checkpoints after each item
-- Use `--resume` flag to continue from last checkpoint
+All types resume interrupted operations automatically — just re-run the same command:
+- **Web crawls**: `metadata.json` is saved every 30 seconds with the queue + visited set, written atomically (`.atomic`) so a kill mid-save can never corrupt it.
+- **Direct fetches**: `checkpoint.json` is updated after each item.
+- Use `--start-clean` to override auto-resume and start fresh from the seed URL.
 
 ### Parallel Fetching
 

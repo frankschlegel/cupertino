@@ -232,7 +232,7 @@ struct ServeCommand: AsyncParsableCommand {
           $ \(cmd) fetch --type packages
 
         ⏱️  Crawling takes 10-30 minutes depending on content type.
-           You can resume if interrupted with --resume flag.
+           If interrupted, just re-run the same command — fetch resumes by default.
 
         🔍 STEP 2: Build Search Index
         ───────────────────────────────────────────────────────────────────────────

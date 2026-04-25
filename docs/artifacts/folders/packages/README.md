@@ -120,9 +120,14 @@ let packages = output.packages  // Clean, sorted packages
 
 ## Resuming Fetch
 
+Resume is automatic. Just re-run the same command:
+
 ```bash
-# Resume if interrupted
-cupertino fetch --type packages --resume
+# Auto-resumes from checkpoint.json
+cupertino fetch --type packages
+
+# Discard checkpoint and start over
+cupertino fetch --type packages --start-clean
 ```
 
 ## Customizing Location

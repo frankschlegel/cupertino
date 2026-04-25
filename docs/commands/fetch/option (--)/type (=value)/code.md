@@ -51,9 +51,15 @@ cupertino fetch --type code --authenticate --limit 50
 cupertino fetch --type code --authenticate --output-dir ./samples
 ```
 
-### Resume Interrupted Download
+### Resume Interrupted Download (automatic)
 ```bash
-cupertino fetch --type code --authenticate --resume
+# Auto-resumes from checkpoint.json — no flag needed
+cupertino fetch --type code --authenticate
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type code --authenticate --start-clean
 ```
 
 ## Authentication Process
