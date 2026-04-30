@@ -281,15 +281,19 @@ struct FetchCommand: AsyncParsableCommand {
             return
         }
 
+        // Prepend so retries happen before the existing queue tail —
+        // semantically "retry errors first" matches user expectation when
+        // running `--retry-errors` after a save-bug fix.
+        let erroredItems = errored.map { QueuedURL(url: $0, depth: maxDepth) }
+        crawlState.queue = erroredItems + crawlState.queue
         for url in errored {
-            crawlState.queue.append(QueuedURL(url: url, depth: maxDepth))
             crawlState.visited.remove(url)
         }
         crawlState.lastSaveTime = Date()
         metadata.crawlState = crawlState
         try metadata.save(to: metadataFile)
 
-        Logging.ConsoleLogger.info("🔁 --retry-errors: re-queued \(errored.count) errored URL(s) at depth \(maxDepth)")
+        Logging.ConsoleLogger.info("🔁 --retry-errors: re-queued \(errored.count) errored URL(s) at depth \(maxDepth) (front of queue)")
     }
 
     private func validateStartURL() throws -> URL {

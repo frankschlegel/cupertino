@@ -246,6 +246,11 @@ struct ResumeAndStartCleanTests {
             "errored URLs should re-enter at maxDepth so children aren't re-crawled"
         )
 
+        // Retries must be prepended (processed first), not appended after a
+        // potentially huge existing queue.
+        let firstTwo = Set((after.crawlState?.queue.prefix(2) ?? []).map(\.url))
+        #expect(firstTwo == [erroredA, erroredB], "errored URLs must be at the front of the queue")
+
         // The errored URLs must come out of the visited set so the crawler
         // doesn't immediately skip them on dequeue.
         #expect(after.crawlState?.visited.contains(erroredA) == false)
