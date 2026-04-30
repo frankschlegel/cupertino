@@ -63,6 +63,16 @@ struct FetchCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Ignore any saved session and start fresh from the seed URL")
     var startClean: Bool = false
 
+    @Flag(
+        name: .long,
+        help: """
+        Re-queue URLs that errored before save (visited but missing from \
+        the pages dict). Use after a filename or save bug is fixed to \
+        retry the affected pages without re-crawling the whole corpus.
+        """
+    )
+    var retryErrors: Bool = false
+
     @Flag(name: .long, inversion: .prefixedNo, help: "Only download accepted/implemented proposals (evolution type only)")
     var onlyAccepted: Bool = true
 
@@ -219,6 +229,9 @@ struct FetchCommand: AsyncParsableCommand {
         if startClean {
             try Self.clearSavedSession(at: outputDirectory)
         }
+        if retryErrors {
+            try Self.requeueErroredURLs(at: outputDirectory, maxDepth: maxDepth)
+        }
         let config = createConfiguration(url: url, outputDirectory: outputDirectory)
         try await executeCrawl(with: config)
     }
@@ -240,6 +253,43 @@ struct FetchCommand: AsyncParsableCommand {
         metadata.crawlState = nil
         try metadata.save(to: metadataFile)
         Logging.ConsoleLogger.info("🧹 --start-clean: cleared saved session at \(metadataFile.path)")
+    }
+
+    /// Re-queue URLs that the crawler visited but never saved to the pages
+    /// dict — typically pages whose save failed (filename too long, write
+    /// errors, etc.). They get removed from the visited set and appended to
+    /// the queue at the configured `maxDepth`, so the resumed crawl retries
+    /// them without re-discovering their children (already in the queue).
+    ///
+    /// `internal static` so tests can exercise it directly.
+    static func requeueErroredURLs(at outputDirectory: URL, maxDepth: Int) throws {
+        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
+        guard FileManager.default.fileExists(atPath: metadataFile.path) else {
+            Logging.ConsoleLogger.info("🔁 --retry-errors: no metadata.json at \(outputDirectory.path)")
+            return
+        }
+        var metadata = try CrawlMetadata.load(from: metadataFile)
+        guard var crawlState = metadata.crawlState else {
+            Logging.ConsoleLogger.info("🔁 --retry-errors: no saved crawlState — nothing to retry")
+            return
+        }
+
+        let savedURLs = Set(metadata.pages.keys)
+        let errored = crawlState.visited.subtracting(savedURLs)
+        guard !errored.isEmpty else {
+            Logging.ConsoleLogger.info("🔁 --retry-errors: no errored URLs to retry (every visited URL is in the pages dict)")
+            return
+        }
+
+        for url in errored {
+            crawlState.queue.append(QueuedURL(url: url, depth: maxDepth))
+            crawlState.visited.remove(url)
+        }
+        crawlState.lastSaveTime = Date()
+        metadata.crawlState = crawlState
+        try metadata.save(to: metadataFile)
+
+        Logging.ConsoleLogger.info("🔁 --retry-errors: re-queued \(errored.count) errored URL(s) at depth \(maxDepth)")
     }
 
     private func validateStartURL() throws -> URL {
@@ -493,8 +543,7 @@ struct FetchCommand: AsyncParsableCommand {
         if recurse {
             if !refresh,
                let cached = Core.ResolvedPackagesStore.load(from: resolvedStoreURL),
-               cached.seedChecksum == seedChecksum
-            {
+               cached.seedChecksum == seedChecksum {
                 Logging.ConsoleLogger.info("🔗 Using cached closure from resolved-packages.json (\(cached.packages.count) packages, generated \(cached.generatedAt))")
                 resolvedPackages = cached.packages
             } else {
@@ -568,7 +617,7 @@ struct FetchCommand: AsyncParsableCommand {
             totalPackages: resolvedPackages.count,
             startTime: startedAt
         )
-        for (i, pkg) in resolvedPackages.enumerated() {
+        for (idx, pkg) in resolvedPackages.enumerated() {
             let label = "\(pkg.owner)/\(pkg.repo)"
             let pkgDir = outputURL
                 .appendingPathComponent(pkg.owner)
@@ -600,9 +649,11 @@ struct FetchCommand: AsyncParsableCommand {
                 Logging.ConsoleLogger.error("  ✗ \(label) — \(error.localizedDescription)")
             }
 
-            if (i + 1) % Shared.Constants.Interval.progressLogEvery == 0 || i + 1 == resolvedPackages.count {
-                let percent = Double(i + 1) / Double(resolvedPackages.count) * 100
-                Logging.ConsoleLogger.output(String(format: "📊 Progress: %.1f%% (%d/%d)", percent, i + 1, resolvedPackages.count))
+            if (idx + 1) % Shared.Constants.Interval.progressLogEvery == 0 || idx + 1 == resolvedPackages.count {
+                let percent = Double(idx + 1) / Double(resolvedPackages.count) * 100
+                Logging.ConsoleLogger.output(
+                    String(format: "📊 Progress: %.1f%% (%d/%d)", percent, idx + 1, resolvedPackages.count)
+                )
             }
         }
         stats.endTime = Date()
