@@ -15,9 +15,10 @@ struct CommandRegistrationTests {
     func subcommandsRegistered() {
         let config = Cupertino.configuration
 
-        // 14 visible (adds `ask`) + 1 hidden (package-search). `setup` now
-        // owns every database — packages-setup was collapsed into it.
-        #expect(config.subcommands.count == 15)
+        // 15 visible + 1 hidden (package-search). `setup` now owns every
+        // database — packages-setup was collapsed into it. `resolve-refs`
+        // post-processes saved pages against #208.
+        #expect(config.subcommands.count == 16)
         #expect(config.subcommands.contains { $0 == SetupCommand.self })
         #expect(config.subcommands.contains { $0 == FetchCommand.self })
         #expect(config.subcommands.contains { $0 == SaveCommand.self })
@@ -33,6 +34,7 @@ struct CommandRegistrationTests {
         #expect(config.subcommands.contains { $0 == CleanupCommand.self })
         #expect(config.subcommands.contains { $0 == PackageSearchCommand.self })
         #expect(config.subcommands.contains { $0 == AskCommand.self })
+        #expect(config.subcommands.contains { $0 == ResolveRefsCommand.self })
     }
 
     @Test("Default subcommand is ServeCommand")

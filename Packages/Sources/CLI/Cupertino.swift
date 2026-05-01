@@ -27,6 +27,7 @@ struct Cupertino: AsyncParsableCommand {
             CleanupCommand.self,
             PackageSearchCommand.self,
             AskCommand.self,
+            ResolveRefsCommand.self,
         ],
         defaultSubcommand: ServeCommand.self
     )
