@@ -509,7 +509,11 @@ struct Reference: Codable {
 
 extension AppleJSONToMarkdown {
     /// Convert Apple documentation JSON to a StructuredDocumentationPage
-    public static func toStructuredPage(_ json: Data, url: URL) -> StructuredDocumentationPage? {
+    public static func toStructuredPage(
+        _ json: Data,
+        url: URL,
+        depth: Int? = nil
+    ) -> StructuredDocumentationPage? {
         guard let doc = try? JSONDecoder().decode(AppleDocumentation.self, from: json) else {
             return nil
         }
@@ -611,7 +615,8 @@ extension AppleJSONToMarkdown {
             conformingTypes: conformingTypes,
             rawMarkdown: markdown,
             crawledAt: Date(),
-            contentHash: ""
+            contentHash: "",
+            crawlDepth: depth
         )
         return page.with(contentHash: page.canonicalContentHash)
     }

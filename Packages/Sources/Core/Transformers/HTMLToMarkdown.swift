@@ -644,7 +644,8 @@ extension HTMLToMarkdown {
     public static func toStructuredPage(
         _ html: String,
         url: URL,
-        source: StructuredDocumentationPage.Source = .appleWebKit
+        source: StructuredDocumentationPage.Source = .appleWebKit,
+        depth: Int? = nil
     ) -> StructuredDocumentationPage? {
         // Extract title
         guard let title = extractTitle(from: html) else {
@@ -691,7 +692,8 @@ extension HTMLToMarkdown {
             codeExamples: codeExamples,
             rawMarkdown: markdown,
             crawledAt: Date(),
-            contentHash: ""
+            contentHash: "",
+            crawlDepth: depth
         )
         return page.with(contentHash: page.canonicalContentHash)
     }

@@ -34,6 +34,9 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
     // Crawl metadata
     public let crawledAt: Date
     public let contentHash: String
+    /// Hops from the start URL when this page was discovered. nil for
+    /// pages saved by binaries that pre-date depth stamping.
+    public let crawlDepth: Int?
 
     public init(
         id: UUID = UUID(),
@@ -54,7 +57,8 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         conformingTypes: [String]? = nil,
         rawMarkdown: String? = nil,
         crawledAt: Date = Date(),
-        contentHash: String = ""
+        contentHash: String = "",
+        crawlDepth: Int? = nil
     ) {
         self.id = id
         self.url = url
@@ -75,6 +79,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         self.rawMarkdown = rawMarkdown
         self.crawledAt = crawledAt
         self.contentHash = contentHash
+        self.crawlDepth = crawlDepth
     }
 
     // MARK: - Codable
@@ -103,6 +108,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         rawMarkdown = try container.decodeIfPresent(String.self, forKey: .rawMarkdown)
         crawledAt = try container.decode(Date.self, forKey: .crawledAt)
         contentHash = try container.decode(String.self, forKey: .contentHash)
+        crawlDepth = try container.decodeIfPresent(Int.self, forKey: .crawlDepth)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -110,7 +116,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         case abstract, declaration, overview, sections, codeExamples
         case language, platforms, module
         case conformsTo, inheritedBy, conformingTypes
-        case rawMarkdown, crawledAt, contentHash
+        case rawMarkdown, crawledAt, contentHash, crawlDepth
     }
 
     // MARK: - Nested Types
@@ -529,7 +535,8 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
             conformingTypes: conformingTypes,
             rawMarkdown: rawMarkdown,
             crawledAt: crawledAt,
-            contentHash: newHash
+            contentHash: newHash,
+            crawlDepth: crawlDepth
         )
     }
 }

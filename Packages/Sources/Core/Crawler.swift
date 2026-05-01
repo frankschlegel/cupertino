@@ -263,7 +263,7 @@ extension Core {
 
             if useJSON {
                 do {
-                    (structuredPage, markdown, links) = try await loadPageViaJSON(url: url)
+                    (structuredPage, markdown, links) = try await loadPageViaJSON(url: url, depth: depth)
                 } catch {
                     if mode == .jsonOnly {
                         // No fallback in pure JSON-only mode — propagate.
@@ -276,7 +276,7 @@ extension Core {
                         (
                             HTMLToMarkdown.convert(html, url: url),
                             extractLinks(from: html, baseURL: url),
-                            HTMLToMarkdown.toStructuredPage(html, url: url)
+                            HTMLToMarkdown.toStructuredPage(html, url: url, depth: depth)
                         )
                     }
                 }
@@ -287,7 +287,7 @@ extension Core {
                     (
                         HTMLToMarkdown.convert(html, url: url),
                         extractLinks(from: html, baseURL: url),
-                        HTMLToMarkdown.toStructuredPage(html, url: url)
+                        HTMLToMarkdown.toStructuredPage(html, url: url, depth: depth)
                     )
                 }
             }
@@ -393,7 +393,7 @@ extension Core {
 
         /// Load page via Apple's JSON API - avoids WKWebView memory issues
         /// Returns structured page data for JSON output and links for crawling
-        private func loadPageViaJSON(url: URL) async throws -> (
+        private func loadPageViaJSON(url: URL, depth: Int) async throws -> (
             structuredPage: StructuredDocumentationPage?,
             markdown: String,
             links: [URL]
@@ -418,7 +418,7 @@ extension Core {
             // accumulating in the implicit Task-scoped pool. See the comment
             // in the main crawl loop for the multi-day-crawl rationale.
             return try autoreleasepool {
-                let structuredPage = AppleJSONToMarkdown.toStructuredPage(data, url: url)
+                let structuredPage = AppleJSONToMarkdown.toStructuredPage(data, url: url, depth: depth)
                 guard let markdown = AppleJSONToMarkdown.convert(data, url: url) else {
                     throw CrawlerError.invalidHTML
                 }

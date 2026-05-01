@@ -623,9 +623,9 @@ func deterministicIDIsStable() {
 
 @Test("deterministicID differs across distinct URLs")
 func deterministicIDDiffersAcrossURLs() {
-    let a = Page.deterministicID(for: URL(string: "https://developer.apple.com/documentation/spatial/rotation3d")!)
-    let b = Page.deterministicID(for: URL(string: "https://developer.apple.com/documentation/spatial/pose3d")!)
-    #expect(a != b)
+    let rotationID = Page.deterministicID(for: URL(string: "https://developer.apple.com/documentation/spatial/rotation3d")!)
+    let poseID = Page.deterministicID(for: URL(string: "https://developer.apple.com/documentation/spatial/pose3d")!)
+    #expect(rotationID != poseID)
 }
 
 @Test("canonicalContentHash is stable across crawledAt and id")
@@ -648,8 +648,8 @@ func canonicalContentHashIgnoresVolatileFields() {
             contentHash: ""
         )
     }
-    let earlier = make(UUID(), Date(timeIntervalSince1970: 1_700_000_000))
-    let later = make(UUID(), Date(timeIntervalSince1970: 1_800_000_000))
+    let earlier = make(UUID(), Date(timeIntervalSince1970: 1700000000))
+    let later = make(UUID(), Date(timeIntervalSince1970: 1800000000))
     #expect(earlier.canonicalContentHash == later.canonicalContentHash)
     #expect(!earlier.canonicalContentHash.isEmpty)
 }
@@ -672,7 +672,7 @@ func withContentHashPreservesFields() {
         kind: .struct,
         source: .appleJSON,
         abstract: "abstract",
-        crawledAt: Date(timeIntervalSince1970: 1_700_000_000),
+        crawledAt: Date(timeIntervalSince1970: 1700000000),
         contentHash: ""
     )
     let stamped = original.with(contentHash: "deadbeef")
@@ -712,4 +712,75 @@ func normalizePreservesUnderscoresInPath() {
     let url = URL(string: "https://developer.apple.com/documentation/installer_js/system")!
     let normalized = URLUtilities.normalize(url)
     #expect(normalized?.absoluteString == "https://developer.apple.com/documentation/installer_js/system")
+}
+
+// MARK: - StructuredDocumentationPage.crawlDepth
+
+@Test("StructuredDocumentationPage.crawlDepth defaults to nil and round-trips through Codable")
+func crawlDepthDefaultsToNilAndRoundTrips() throws {
+    let withoutDepth = Page(
+        url: URL(string: "https://developer.apple.com/documentation/swift/array")!,
+        title: "Array",
+        kind: .struct,
+        source: .appleJSON
+    )
+    #expect(withoutDepth.crawlDepth == nil)
+
+    let withDepth = Page(
+        url: URL(string: "https://developer.apple.com/documentation/swift/array/append(_:)")!,
+        title: "append",
+        kind: .method,
+        source: .appleJSON,
+        crawlDepth: 3
+    )
+    #expect(withDepth.crawlDepth == 3)
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+
+    let nilEncoded = try encoder.encode(withoutDepth)
+    let nilRound = try decoder.decode(Page.self, from: nilEncoded)
+    #expect(nilRound.crawlDepth == nil)
+
+    let depthEncoded = try encoder.encode(withDepth)
+    let valueRound = try decoder.decode(Page.self, from: depthEncoded)
+    #expect(valueRound.crawlDepth == 3)
+}
+
+@Test("StructuredDocumentationPage decodes legacy JSON without crawlDepth")
+func crawlDepthLegacyJSONDecodesAsNil() throws {
+    // Legacy JSON written by binaries before crawlDepth existed: same shape
+    // as today minus the crawlDepth key. Decoder must succeed and produce nil.
+    let legacyJSON = """
+    {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "url": "https://developer.apple.com/documentation/swift/array",
+        "title": "Array",
+        "kind": "struct",
+        "source": "appleJSON",
+        "sections": [],
+        "codeExamples": [],
+        "crawledAt": "2026-04-30T21:21:43Z",
+        "contentHash": "deadbeef"
+    }
+    """
+    let legacyJSONData = Data(legacyJSON.utf8)
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let page = try decoder.decode(Page.self, from: legacyJSONData)
+    #expect(page.crawlDepth == nil)
+    #expect(page.title == "Array")
+}
+
+@Test("StructuredDocumentationPage.crawlDepth does not affect canonicalContentHash")
+func crawlDepthDoesNotPerturbCanonicalHash() {
+    let url = URL(string: "https://developer.apple.com/documentation/swift/array")!
+    let depthA = Page(url: url, title: "Array", kind: .struct, source: .appleJSON, crawlDepth: 2)
+    let depthB = Page(url: url, title: "Array", kind: .struct, source: .appleJSON, crawlDepth: 5)
+    let depthNil = Page(url: url, title: "Array", kind: .struct, source: .appleJSON)
+    #expect(depthA.canonicalContentHash == depthB.canonicalContentHash)
+    #expect(depthA.canonicalContentHash == depthNil.canonicalContentHash)
 }
