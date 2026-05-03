@@ -20,6 +20,14 @@ PRODUCT_NAME_CLI = cupertino
 PRODUCT_NAME_TUI = cupertino-tui
 PRODUCT_NAME_REL = cupertino-rel
 
+# Dev base directory written into cupertino.config.json beside locally-built
+# binaries (#218). Redirects every default path under ~/.cupertino-dev/ so the
+# dev binary doesn't clobber the brew-installed binary's data at ~/.cupertino/.
+# Override at invocation: `make build-debug DEV_BASE_DIR=~/some-other-dir`.
+# Brew bottles ship only the binary (see `bottle:` target), not this file, so
+# released binaries still resolve to the standard ~/.cupertino/.
+DEV_BASE_DIR ?= ~/.cupertino-dev
+
 # Detect architecture
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),arm64)
@@ -88,9 +96,11 @@ build-debug:
 	@echo "$(BOLD)$(GREEN)Building Cupertino (debug)...$(RESET)"
 	$(SWIFT) build --product $(PRODUCT_NAME_CLI)
 	$(SWIFT) build --product $(PRODUCT_NAME_TUI)
+	@printf '{ "baseDirectory": "%s" }\n' "$(DEV_BASE_DIR)" > $(BUILD_DIR)/debug/cupertino.config.json
 	@echo "$(GREEN)✓ Build complete$(RESET)"
 	@echo "  CLI: $(BUILD_DIR)/debug/$(PRODUCT_NAME_CLI)"
 	@echo "  TUI: $(BUILD_DIR)/debug/$(PRODUCT_NAME_TUI)"
+	@echo "  Config: $(BUILD_DIR)/debug/cupertino.config.json → baseDirectory=$(DEV_BASE_DIR) (#218)"
 
 ## build-release: Build in release mode (optimized)
 build-release:
@@ -98,10 +108,12 @@ build-release:
 	$(SWIFT) build $(SWIFT_BUILD_FLAGS) --product $(PRODUCT_NAME_CLI)
 	$(SWIFT) build $(SWIFT_BUILD_FLAGS) --product $(PRODUCT_NAME_TUI)
 	$(SWIFT) build $(SWIFT_BUILD_FLAGS) --product $(PRODUCT_NAME_REL)
+	@printf '{ "baseDirectory": "%s" }\n' "$(DEV_BASE_DIR)" > $(BUILD_DIR)/release/cupertino.config.json
 	@echo "$(GREEN)✓ Build complete$(RESET)"
 	@echo "  CLI: $(BUILD_DIR)/release/$(PRODUCT_NAME_CLI)"
 	@echo "  TUI: $(BUILD_DIR)/release/$(PRODUCT_NAME_TUI)"
 	@echo "  REL: $(BUILD_DIR)/release/$(PRODUCT_NAME_REL)"
+	@echo "  Config: $(BUILD_DIR)/release/cupertino.config.json → baseDirectory=$(DEV_BASE_DIR) (#218)"
 
 ## install: Install executables to PREFIX/bin (copy)
 install:

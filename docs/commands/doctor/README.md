@@ -226,12 +226,12 @@ Shows:
 ### 3. Swift Packages (filesystem)
 
 Checks:
-- **User selections file** (`~/.cupertino/selected-packages.json`)
-- **Downloaded READMEs** under `~/.cupertino/packages/<owner>/<repo>/`
+- **User selections file** (`~/.cupertino/selected-packages.json`) — additively merged with the embedded priority list on every load ([#218](https://github.com/mihaelamj/cupertino/issues/218)). New seeds shipped in `PriorityPackagesEmbedded.swift` propagate into existing installs the next time any subcommand touches the catalog. User deletions don't stick — the merge is set-diff.
+- **Downloaded packages** under `~/.cupertino/packages/<owner>/<repo>/` (whole archives, not just READMEs — see `fetch --type packages` stage 2)
 - Reports orphaned READMEs (packages no longer selected)
 - Counts priority packages bundled with the binary (Apple + Ecosystem)
 
-**Warning only** - server still runs without local package READMEs.
+**Warning only** - server still runs without local package archives.
 
 ### 4. Packages Index (`packages.db`)
 

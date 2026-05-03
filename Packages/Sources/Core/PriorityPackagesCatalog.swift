@@ -149,37 +149,155 @@ public enum PriorityPackagesCatalog {
 
         do {
             let data = try Data(contentsOf: fileURL)
-            let catalog = try JSONDecoder().decode(PriorityPackagesCatalogJSON.self, from: data)
-            return catalog
+            return try JSONDecoder().decode(PriorityPackagesCatalogJSON.self, from: data)
         } catch {
             // User file exists but is invalid - fall back to bundled
             return nil
         }
     }
 
-    /// Ensure user selections file exists, copying the bundled catalog as the
-    /// initial selection on first run. Mirrors ArchiveGuideCatalog so
-    /// `fetch --type package-docs` honours user customisation out of the box.
+    /// Ensure user selections file is present and up-to-date.
+    ///
+    /// On first run: copies the embedded catalog wholesale as the initial
+    /// selection. On subsequent runs: additive merge — entries present in
+    /// the embedded list but missing from the user file (matched on
+    /// `owner.lowercased()/repo.lowercased()`) are appended. User deletions
+    /// stick (we never remove), but newly-shipped seeds in
+    /// `PriorityPackagesEmbedded.swift` propagate into existing installs the
+    /// next time any caller touches `PriorityPackagesCatalog`.
+    ///
+    /// Fixes the 2026-05-03 staleness bug filed under #218: a Dec 2025
+    /// `~/.cupertino/selected-packages.json` was frozen at the priority list
+    /// from then, so April 2026 additions (e.g. `mihaelamj/*` packages)
+    /// never reached the resolver despite being in the embedded JSON.
     private static func ensureUserSelectionsFileExists() {
         let selectedURL = userSelectionsURL
-
-        if FileManager.default.fileExists(atPath: selectedURL.path) {
-            return
-        }
 
         guard let embeddedData = CupertinoResources.jsonData(named: "priority-packages") else {
             return
         }
 
-        do {
-            let baseDir = Shared.Constants.defaultBaseDirectory
-            if !FileManager.default.fileExists(atPath: baseDir.path) {
-                try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: selectedURL.path) {
+            do {
+                let baseDir = Shared.Constants.defaultBaseDirectory
+                if !FileManager.default.fileExists(atPath: baseDir.path) {
+                    try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+                }
+                try embeddedData.write(to: selectedURL)
+            } catch {
+                // Silently fail - fall back to embedded resource in loadCatalog
             }
+            return
+        }
 
-            try embeddedData.write(to: selectedURL)
+        // File exists — additively merge any new embedded entries (#218).
+        mergeNewEmbeddedEntries(into: selectedURL, from: embeddedData)
+    }
+
+    /// Append entries present in `embeddedData` but missing from the user
+    /// file at `selectedURL`. Matched on
+    /// `owner.lowercased()/repo.lowercased()`. Idempotent — silent when the
+    /// user file already covers every embedded entry; prints a one-line
+    /// summary when it adds anything. Never removes entries.
+    /// `internal` (not `private`) so #218 unit tests can drive it without
+    /// touching real disk or network state.
+    static func mergeNewEmbeddedEntries(into selectedURL: URL, from embeddedData: Data) {
+        let decoder = JSONDecoder()
+        guard let embedded = try? decoder.decode(PriorityPackagesCatalogJSON.self, from: embeddedData),
+              let userData = try? Data(contentsOf: selectedURL),
+              let user = try? decoder.decode(PriorityPackagesCatalogJSON.self, from: userData)
+        else {
+            return
+        }
+
+        func key(_ pkg: PriorityPackage) -> String {
+            let derivedOwner: String
+            if let owner = pkg.owner, !owner.isEmpty {
+                derivedOwner = owner.lowercased()
+            } else {
+                let parsed = URL(string: pkg.url)?
+                    .pathComponents
+                    .dropFirst()
+                    .first?
+                    .lowercased()
+                derivedOwner = parsed ?? ""
+            }
+            return "\(derivedOwner)/\(pkg.repo.lowercased())"
+        }
+
+        var userKeys = Set<String>()
+        if let apple = user.tiers.appleOfficial {
+            for pkg in apple.packages {
+                userKeys.insert(key(pkg))
+            }
+        }
+        for pkg in user.tiers.ecosystem.packages {
+            userKeys.insert(key(pkg))
+        }
+
+        var newApple: [PriorityPackage] = []
+        if let apple = embedded.tiers.appleOfficial {
+            newApple = apple.packages.filter { !userKeys.contains(key($0)) }
+        }
+        let newEcosystem = embedded.tiers.ecosystem.packages.filter { !userKeys.contains(key($0)) }
+
+        let totalNew = newApple.count + newEcosystem.count
+        guard totalNew > 0 else { return }
+
+        let mergedAppleTier: PriorityTier?
+        if let userApple = user.tiers.appleOfficial {
+            let merged = userApple.packages + newApple
+            mergedAppleTier = PriorityTier(
+                description: userApple.description,
+                owner: userApple.owner,
+                count: merged.count,
+                packages: merged
+            )
+        } else {
+            mergedAppleTier = embedded.tiers.appleOfficial
+        }
+
+        let userEcosystem = user.tiers.ecosystem
+        let mergedEcosystemPackages = userEcosystem.packages + newEcosystem
+        let mergedEcosystemTier = PriorityTier(
+            description: userEcosystem.description,
+            owner: userEcosystem.owner,
+            count: mergedEcosystemPackages.count,
+            packages: mergedEcosystemPackages
+        )
+
+        let mergedTiers = PriorityTiers(
+            appleOfficial: mergedAppleTier,
+            ecosystem: mergedEcosystemTier
+        )
+
+        let totalApple = mergedAppleTier?.packages.count ?? 0
+        let totalEco = mergedEcosystemTier.packages.count
+        let mergedStats = PriorityPackageStats(
+            totalCriticalApplePackages: totalApple,
+            totalEcosystemPackages: totalEco,
+            totalPriorityPackages: totalApple + totalEco
+        )
+
+        let merged = PriorityPackagesCatalogJSON(
+            version: embedded.version,
+            lastUpdated: embedded.lastUpdated,
+            description: user.description,
+            tiers: mergedTiers,
+            stats: mergedStats
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let mergedData = try? encoder.encode(merged) else {
+            return
+        }
+
+        do {
+            try mergedData.write(to: selectedURL)
+            print("📥 selected-packages.json: added \(totalNew) new priority entries from embedded list (#218)")
         } catch {
-            // Silently fail - fall back to embedded resource in loadCatalog
+            // Silently fail - we already have the user file from before
         }
     }
 
