@@ -11,6 +11,7 @@ CLI commands for the Cupertino documentation server.
 | [save](save/) | Build FTS5 search index from downloaded documentation |
 | [index](index/) | Index sample code for full-text search |
 | [serve](serve/) | Start MCP server for AI agent access |
+| [ask](ask/) | Ask a natural-language question across all indexed sources |
 | [search](search/) | Search documentation from the command line |
 | [read](read/) | Read full document content by URI |
 | [list-frameworks](list-frameworks/) | List available frameworks with document counts |
@@ -18,6 +19,7 @@ CLI commands for the Cupertino documentation server.
 | [search-samples](search-samples/) | Search Apple sample code projects and files |
 | [read-sample](read-sample/) | Read a sample project's README and metadata |
 | [read-sample-file](read-sample-file/) | Read a source file from a sample project |
+| [resolve-refs](resolve-refs/) | Rewrite unresolved `doc://` markers in saved page rawMarkdown |
 | [doctor](doctor/) | Check server health and configuration |
 | [cleanup](cleanup/) | Clean up downloaded sample code archives |
 

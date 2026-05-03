@@ -30,6 +30,7 @@ The `fetch` command is the unified fetching command that handles both web crawli
   - `samples` - Apple Sample Code (git clone from GitHub, recommended)
   - `archive` - Apple Archive guides (legacy programming guides)
   - `hig` - Human Interface Guidelines (web crawl)
+  - `availability` - API version info for existing docs (annotates already-crawled pages)
   - `all` - All types in parallel
 
 ### Web Crawl Options
@@ -40,7 +41,11 @@ The `fetch` command is the unified fetching command that handles both web crawli
 - `--allowed-prefixes` - Comma-separated URL prefixes to allow (auto-detected if not specified)
 - [--force](force.md) - Force recrawl of all pages (ignore change detection)
 - [--start-clean](start-clean.md) - Ignore any saved session and start fresh from the seed URL
-- `--only-accepted` - Only download accepted/implemented proposals (evolution type only)
+- `--retry-errors` - Re-queue URLs that errored before save (visited but missing from the pages dict). Use after a filename or save bug is fixed to retry the affected pages without re-crawling the whole corpus.
+- `--baseline <path>` - Path to a known-good baseline corpus directory (e.g. a prior `cupertino-docs/docs` snapshot). On startup, URLs present in the baseline but missing from the current crawl's known set are prepended to the queue so the resumed crawl recovers gaps without a full recrawl. Path comparison is case-insensitive.
+- `--urls <path>` - Path to a text file containing one URL per line. Each URL is enqueued at depth 0; the crawler follows links from each up to `--max-depth`. Set `--max-depth 0` to fetch only the listed URLs with no descent. Useful for fetching a fixed list of URLs another corpus has but this one is missing, without re-spidering. Lines starting with `#` and blank lines are ignored. ([#210](https://github.com/mihaelamj/cupertino/issues/210))
+- `--discovery-mode <mode>` - Discovery mode for the docs crawler. Values: `auto` (default; JSON API primary, WKWebView fallback when JSON returns 404), `json-only` (JSON API only, no fallback. Fastest, narrowest), `webview-only` (WKWebView for everything. Slowest, broadest discovery, matches pre-2025-11-30 behavior). ([#208](https://github.com/mihaelamj/cupertino/issues/208))
+- `--only-accepted` / `--no-only-accepted` - Only download accepted/implemented proposals (evolution type only). On by default; use `--no-only-accepted` to include drafts and rejected proposals.
 
 > **Resume is automatic.** If a previous `fetch` was interrupted, just re-run the same command — the crawler picks up its `metadata.json` and continues from where it left off. No flag needed. Use `--start-clean` to override and start over.
 
@@ -49,6 +54,7 @@ The `fetch` command is the unified fetching command that handles both web crawli
 - [--output-dir](output-dir.md) - Output directory for downloaded resources
 - [--limit](limit.md) - Maximum number of items to fetch (packages/code types only)
 - [--authenticate](authenticate.md) - Launch visible browser for authentication (code type only)
+- `--fast` - Use higher concurrency and shorter timeouts for `--type availability` (faster but more aggressive)
 
 ## Examples
 
