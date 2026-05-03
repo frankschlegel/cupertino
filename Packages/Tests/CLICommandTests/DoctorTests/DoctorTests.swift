@@ -1,5 +1,6 @@
 @testable import CLI
 import Core
+import Diagnostics
 import Foundation
 import MCP
 import MCPSupport
@@ -14,7 +15,7 @@ import TestSupport
 @Suite("MCP Doctor Command Tests", .serialized)
 struct MCPDoctorCommandTests {
     @Test("MCP Doctor performs health checks")
-    func doctorPerformsHealthChecks() async throws {
+    func doctorPerformsHealthChecks() {
         // This test verifies the doctor command structure
         // Full testing requires running the actual command with output capture
         #expect(true, "MCP Doctor command structure exists")
@@ -22,7 +23,7 @@ struct MCPDoctorCommandTests {
     }
 
     @Test("MCP Doctor checks documentation directories")
-    func doctorChecksDocumentationDirectories() async throws {
+    func doctorChecksDocumentationDirectories() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-doctor-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -75,7 +76,7 @@ struct MCPDoctorCommandTests {
         await idx.disconnect()
 
         // A fresh DB stamps user_version to the current schema version.
-        let read = DoctorCommand.readUserVersion(at: dbPath)
+        let read = Diagnostics.Probes.userVersion(at: dbPath)
         #expect(read == Search.Index.schemaVersion)
     }
 
@@ -83,7 +84,7 @@ struct MCPDoctorCommandTests {
     func doctorUserVersionMissing() {
         let missingPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("definitely-not-here-\(UUID().uuidString).db")
-        #expect(DoctorCommand.readUserVersion(at: missingPath) == nil)
+        #expect(Diagnostics.Probes.userVersion(at: missingPath) == nil)
     }
 
     @Test("Doctor returns nil rowCount for a missing table")
@@ -97,7 +98,7 @@ struct MCPDoctorCommandTests {
         await idx.disconnect()
 
         // `packages` is a packages.db table, not present in search.db.
-        let count = DoctorCommand.rowCount(dbPath: dbPath, sql: "SELECT COUNT(*) FROM packages_that_do_not_exist;")
+        let count = Diagnostics.Probes.rowCount(at: dbPath, sql: "SELECT COUNT(*) FROM packages_that_do_not_exist;")
         #expect(count == nil)
     }
 
@@ -111,8 +112,8 @@ struct MCPDoctorCommandTests {
         let idx = try await Search.Index(dbPath: dbPath)
         await idx.disconnect()
 
-        let count = DoctorCommand.rowCount(dbPath: dbPath, sql: "SELECT COUNT(*) FROM docs_metadata;")
-        #expect(count == 0)
+        let result = Diagnostics.Probes.rowCount(at: dbPath, sql: "SELECT COUNT(*) FROM docs_metadata;")
+        #expect(result == 0)
     }
 
     // MARK: - #192 I6: schema-mismatch path verification
@@ -149,12 +150,14 @@ struct MCPDoctorCommandTests {
         }
 
         // Doctor reads back the on-disk version
-        let onDisk = DoctorCommand.readUserVersion(at: dbPath)
+        let onDisk = Diagnostics.Probes.userVersion(at: dbPath)
         #expect(onDisk == 11, "doctor must surface the actual stale version")
 
         // The binary expects a higher version
-        #expect(Search.Index.schemaVersion > (onDisk ?? 0),
-                "binary should expect a newer schema than the stale on-disk DB")
+        #expect(
+            Search.Index.schemaVersion > (onDisk ?? 0),
+            "binary should expect a newer schema than the stale on-disk DB"
+        )
 
         // Confirm the stale DB cannot be opened via Search.Index — the
         // breaking-migration throw is what produces the "rebuild required"

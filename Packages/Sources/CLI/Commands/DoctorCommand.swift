@@ -1,5 +1,6 @@
 import ArgumentParser
 import Core
+import Diagnostics
 import Foundation
 import Logging
 import MCP
@@ -8,7 +9,6 @@ import SampleIndex
 import Search
 import SearchToolProvider
 import Shared
-import SQLite3
 
 // MARK: - Doctor Command
 
@@ -135,47 +135,10 @@ struct DoctorCommand: AsyncParsableCommand {
                 Log.output("   ⚠ \(label): not built")
                 continue
             }
-            let version = readSchemaVersion(at: url)
-            let formatted = formatSchemaVersion(version)
+            let version = Diagnostics.Probes.userVersion(at: url) ?? 0
+            let formatted = Diagnostics.SchemaVersion.format(version)
             Log.output("   ✓ \(label): \(formatted)")
         }
-    }
-
-    /// Open the SQLite file read-only, query `PRAGMA user_version`,
-    /// close. Returns `0` on any failure (matches SQLite's "no version
-    /// set" default).
-    private func readSchemaVersion(at url: URL) -> Int32 {
-        var database: OpaquePointer?
-        defer { sqlite3_close(database) }
-        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            return 0
-        }
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK,
-              sqlite3_step(statement) == SQLITE_ROW
-        else {
-            return 0
-        }
-        return sqlite3_column_int(statement, 0)
-    }
-
-    /// Render the `Int32` user_version as either a date-style string
-    /// (when the value parses as `YYYYMMDD` ≥ 1970-01-01) or a plain
-    /// integer (legacy sequential int). Mirrors the dual-format
-    /// transition #234 anticipates.
-    private func formatSchemaVersion(_ version: Int32) -> String {
-        guard version > 0 else { return "(unset)" }
-        let intValue = Int(version)
-        let day = intValue % 100
-        let month = (intValue / 100) % 100
-        let year = intValue / 10000
-        if year >= 1970, year <= 9999,
-           (1...12).contains(month),
-           (1...31).contains(day) {
-            return String(format: "%d (%04d-%02d-%02d, date-style)", version, year, month, day)
-        }
-        return "\(version) (sequential)"
     }
 
     private func checkServerInitialization() -> Bool {
@@ -212,7 +175,7 @@ struct DoctorCommand: AsyncParsableCommand {
 
         for entry in entries {
             if FileManager.default.fileExists(atPath: entry.url.path) {
-                let count = countCorpusFiles(in: entry.url)
+                let count = Diagnostics.Probes.countCorpusFiles(in: entry.url)
                 Log.output("   ✓ \(entry.label): \(entry.url.path) (\(count) \(entry.suffix))")
             } else {
                 Log.output("   ⚠  \(entry.label): \(entry.url.path) (not found)")
@@ -224,27 +187,6 @@ struct DoctorCommand: AsyncParsableCommand {
         // Filesystem state is informational. The hard fail is whether
         // search.db has indexed data, which `checkSearchDatabase` enforces.
         return true
-    }
-
-    /// Count corpus document files under `directory`. Matches `.md` and `.json`
-    /// because different sources save in different formats: docs writes JSON
-    /// (`StructuredDocumentationPage`), evolution and HIG write markdown,
-    /// Apple Archive mixes both.
-    private func countCorpusFiles(in directory: URL) -> Int {
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return 0
-        }
-
-        var count = 0
-        for case let fileURL as URL in enumerator
-            where fileURL.pathExtension == "md" || fileURL.pathExtension == "json" {
-            count += 1
-        }
-        return count
     }
 
     private func checkSearchDatabase() async -> Bool {
@@ -287,7 +229,7 @@ struct DoctorCommand: AsyncParsableCommand {
     /// migrating from an incompatible version throws during init, and the
     /// user wants to know which version they're stuck on.
     private func reportSchemaVersion(at searchDBURL: URL) -> Bool {
-        let onDiskVersion = Self.readUserVersion(at: searchDBURL)
+        let onDiskVersion = Diagnostics.Probes.userVersion(at: searchDBURL)
         let expected = Search.Index.schemaVersion
         guard let onDiskVersion else {
             Log.output("   ⚠  Schema version: could not read PRAGMA user_version")
@@ -312,7 +254,7 @@ struct DoctorCommand: AsyncParsableCommand {
     /// for "can my MCP answer queries about source X?". Hard-fails if the DB
     /// opens but has zero indexed rows (silent-empty MCP otherwise).
     private func reportIndexedSources(at searchDBURL: URL) -> Bool {
-        let perSource = Self.perSourceCounts(dbPath: searchDBURL)
+        let perSource = Diagnostics.Probes.perSourceCounts(at: searchDBURL)
         if !perSource.isEmpty {
             Log.output("   📚 Indexed sources:")
             for (source, count) in perSource {
@@ -350,9 +292,9 @@ struct DoctorCommand: AsyncParsableCommand {
         Log.output("   ✓ Database: \(samplesDBURL.path)")
         Log.output("   ✓ Size: \(Shared.Formatting.formatBytes(Int64(fileSize)))")
 
-        let projectCount = Self.rowCount(dbPath: samplesDBURL, sql: "SELECT COUNT(*) FROM projects;")
-        let fileCount = Self.rowCount(dbPath: samplesDBURL, sql: "SELECT COUNT(*) FROM files;")
-        let symbolCount = Self.rowCount(dbPath: samplesDBURL, sql: "SELECT COUNT(*) FROM file_symbols;")
+        let projectCount = Diagnostics.Probes.rowCount(at: samplesDBURL, sql: "SELECT COUNT(*) FROM projects;")
+        let fileCount = Diagnostics.Probes.rowCount(at: samplesDBURL, sql: "SELECT COUNT(*) FROM files;")
+        let symbolCount = Diagnostics.Probes.rowCount(at: samplesDBURL, sql: "SELECT COUNT(*) FROM file_symbols;")
         if let projectCount { Log.output("   ✓ Projects: \(projectCount)") }
         if let fileCount { Log.output("   ✓ Indexed files: \(fileCount)") }
         if let symbolCount { Log.output("   ✓ Indexed symbols: \(symbolCount)") }
@@ -381,8 +323,8 @@ struct DoctorCommand: AsyncParsableCommand {
         Log.output("   ✓ Database: \(packagesDBURL.path)")
         Log.output("   ✓ Size: \(Shared.Formatting.formatBytes(Int64(fileSize)))")
 
-        let packageCount = Self.rowCount(dbPath: packagesDBURL, sql: "SELECT COUNT(*) FROM packages;")
-        let fileCount = Self.rowCount(dbPath: packagesDBURL, sql: "SELECT COUNT(*) FROM package_files;")
+        let packageCount = Diagnostics.Probes.rowCount(at: packagesDBURL, sql: "SELECT COUNT(*) FROM packages;")
+        let fileCount = Diagnostics.Probes.rowCount(at: packagesDBURL, sql: "SELECT COUNT(*) FROM package_files;")
         if let packageCount { Log.output("   ✓ Packages: \(packageCount)") }
         if let fileCount { Log.output("   ✓ Indexed files: \(fileCount)") }
         Log.output("   ℹ  Bundled version: \(Shared.Constants.App.packagesIndexVersion)")
@@ -401,7 +343,7 @@ struct DoctorCommand: AsyncParsableCommand {
         // set so we can compare against on-disk READMEs by NAME, not by count.
         let selectedURLs: Set<String>
         if FileManager.default.fileExists(atPath: userSelectionsURL.path) {
-            selectedURLs = loadUserSelectedPackageURLs(from: userSelectionsURL)
+            selectedURLs = Diagnostics.Probes.userSelectedPackageURLs(from: userSelectionsURL)
             Log.output("   ✓ User selections: \(userSelectionsURL.path)")
             Log.output("     \(selectedURLs.count) packages selected")
         } else {
@@ -409,13 +351,13 @@ struct DoctorCommand: AsyncParsableCommand {
             Log.output("   ⚠  User selections: not configured")
             Log.output("     → Use TUI to select packages, or will use bundled defaults")
         }
-        let selectedKeys = Set(selectedURLs.compactMap(Self.ownerRepoKey(forGitHubURL:)))
+        let selectedKeys = Set(selectedURLs.compactMap(Diagnostics.Probes.ownerRepoKey(forGitHubURL:)))
 
         // Check downloaded READMEs and identify true orphans (downloaded
         // owner/repo no longer in selections) and true gaps (selected but
         // not yet downloaded).
         if FileManager.default.fileExists(atPath: packagesDir.path) {
-            let readmeKeys = packageREADMEKeys(in: packagesDir)
+            let readmeKeys = Diagnostics.Probes.packageREADMEKeys(in: packagesDir)
             if readmeKeys.isEmpty {
                 Log.output("   ⚠  Package docs: directory exists but no package files")
             } else {
@@ -448,149 +390,11 @@ struct DoctorCommand: AsyncParsableCommand {
         Log.output("")
     }
 
-    private func loadUserSelectedPackageURLs(from fileURL: URL) -> Set<String> {
-        guard let data = try? Data(contentsOf: fileURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tiers = json["tiers"] as? [String: Any] else {
-            return []
-        }
-
-        var urls = Set<String>()
-        for (_, tierValue) in tiers {
-            if let tier = tierValue as? [String: Any],
-               let packages = tier["packages"] as? [[String: Any]] {
-                for pkg in packages {
-                    if let url = pkg["url"] as? String {
-                        urls.insert(url)
-                    }
-                }
-            }
-        }
-        return urls
-    }
-
-    /// Walk `~/.cupertino/packages/<owner>/<repo>/README.md` and return the
-    /// canonical `owner/repo` set (lowercased). Used to diff against the
-    /// user's selected URLs by NAME so doctor can report true orphans
-    /// (downloaded but no longer selected) and true gaps (selected but not
-    /// downloaded).
-    private func packageREADMEKeys(in directory: URL) -> Set<String> {
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        var keys = Set<String>()
-        for case let fileURL as URL in enumerator
-            where fileURL.lastPathComponent.lowercased() == "readme.md" {
-            // Path layout is `<packagesDir>/<owner>/<repo>/README.md`. The
-            // two components above the README are the owner/repo pair.
-            let components = fileURL.pathComponents
-            guard components.count >= 3 else { continue }
-            let owner = components[components.count - 3].lowercased()
-            let repo = components[components.count - 2].lowercased()
-            keys.insert("\(owner)/\(repo)")
-        }
-        return keys
-    }
-
     private func checkResourceProviders() -> Bool {
         Log.output("🔧 Providers")
         Log.output("   ✓ DocsResourceProvider: available")
         Log.output("   ✓ SearchToolProvider: available")
         Log.output("")
         return true
-    }
-}
-
-// MARK: - Static SQLite + URL helpers
-
-///
-/// Hoisted to an extension to keep the main DoctorCommand body under the
-/// swiftlint type_body_length limit. Behaviour-preserving move; same call
-/// sites (`Self.<helper>`) continue to work because Swift extensions are
-/// part of the same type.
-extension DoctorCommand {
-    /// Per-source row counts from `docs_metadata`. Returns an array of
-    /// `(source, count)` tuples sorted by count descending so the largest
-    /// source surfaces first. Empty array if the table or DB can't be read.
-    static func perSourceCounts(dbPath: URL) -> [(source: String, count: Int)] {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            return []
-        }
-        defer { sqlite3_close(db) }
-
-        let sql = "SELECT source, COUNT(*) FROM docs_metadata GROUP BY source ORDER BY 2 DESC;"
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            return []
-        }
-
-        var result: [(source: String, count: Int)] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let source = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "(null)"
-            let count = Int(sqlite3_column_int(stmt, 1))
-            result.append((source, count))
-        }
-        return result
-    }
-
-    /// Read `PRAGMA user_version` directly without opening the DB through
-    /// `Search.Index` (whose init will throw on incompatible versions).
-    static func readUserVersion(at dbPath: URL) -> Int32? {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            return nil
-        }
-        defer { sqlite3_close(db) }
-
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK,
-              sqlite3_step(stmt) == SQLITE_ROW else {
-            return nil
-        }
-        return sqlite3_column_int(stmt, 0)
-    }
-
-    /// Run a `SELECT COUNT(*) ...` read-only against any sqlite DB. Returns
-    /// nil if the query fails (most commonly because the table doesn't
-    /// exist — surface that as blank rather than a crash).
-    static func rowCount(dbPath: URL, sql: String) -> Int? {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            return nil
-        }
-        defer { sqlite3_close(db) }
-
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK,
-              sqlite3_step(stmt) == SQLITE_ROW else {
-            return nil
-        }
-        return Int(sqlite3_column_int(stmt, 0))
-    }
-
-    /// Extract the canonical `owner/repo` key from a GitHub URL like
-    /// `https://github.com/apple/swift-syntax` (with optional `.git` suffix
-    /// or trailing slash). Returns nil for non-GitHub URLs so non-comparable
-    /// sources don't accidentally enter the orphan/missing diff.
-    static func ownerRepoKey(forGitHubURL url: String) -> String? {
-        guard let parsed = URL(string: url),
-              parsed.host?.contains("github.com") == true else { return nil }
-        let components = parsed.path.split(separator: "/").map(String.init)
-        guard components.count >= 2 else { return nil }
-        let owner = components[0]
-        var repo = components[1]
-        if repo.hasSuffix(".git") {
-            repo = String(repo.dropLast(4))
-        }
-        return "\(owner.lowercased())/\(repo.lowercased())"
     }
 }

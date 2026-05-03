@@ -24,6 +24,7 @@ let macOSOnlyProducts: [Product] = [
     .singleTargetLibrary("SampleIndex"),
     .singleTargetLibrary("Services"),
     .singleTargetLibrary("Distribution"),
+    .singleTargetLibrary("Diagnostics"),
     .singleTargetLibrary("Resources"),
     .singleTargetLibrary("Availability"),
     .singleTargetLibrary("ASTIndexer"),
@@ -225,6 +226,16 @@ let targets: [Target] = {
         dependencies: ["Distribution", "Shared", "TestSupport"]
     )
 
+    // ---------- Diagnostics (#245: DoctorCommand probe lift) ----------
+    let diagnosticsTarget = Target.target(
+        name: "Diagnostics",
+        dependencies: []
+    )
+    let diagnosticsTestsTarget = Target.testTarget(
+        name: "DiagnosticsTests",
+        dependencies: ["Diagnostics", "TestSupport"]
+    )
+
     let cliTarget = Target.executableTarget(
         name: "CLI",
         dependencies: [
@@ -235,6 +246,7 @@ let targets: [Target] = {
             "SampleIndex",
             "Services",
             "Distribution",
+            "Diagnostics",
             "Logging",
             "RemoteSync",
             "Availability",
@@ -294,7 +306,7 @@ let targets: [Target] = {
 
     let doctorTestsTarget = Target.testTarget(
         name: "DoctorTests",
-        dependencies: ["CLI", "MCP", "MCPSupport", "Search", "Shared", "TestSupport"],
+        dependencies: ["CLI", "Diagnostics", "MCP", "MCPSupport", "Search", "Shared", "TestSupport"],
         path: "Tests/CLICommandTests/DoctorTests"
     )
 
@@ -347,6 +359,8 @@ let targets: [Target] = {
         servicesTestsTarget,
         distributionTarget,
         distributionTestsTarget,
+        diagnosticsTarget,
+        diagnosticsTestsTarget,
         mcpSupportTarget,
         mcpSupportTestsTarget,
         searchToolProviderTarget,
