@@ -194,7 +194,8 @@ extension SearchCommand {
         availabilityFilterActive: Bool,
         platform: String?,
         minVersion: String?,
-        format: OutputFormat
+        format: OutputFormat,
+        brief: Bool
     ) {
         switch format {
         case .text:
@@ -203,7 +204,8 @@ extension SearchCommand {
                 question: question,
                 availabilityFilterActive: availabilityFilterActive,
                 platform: platform,
-                minVersion: minVersion
+                minVersion: minVersion,
+                brief: brief
             )
         case .markdown:
             printSmartReportMarkdown(
@@ -211,11 +213,29 @@ extension SearchCommand {
                 question: question,
                 availabilityFilterActive: availabilityFilterActive,
                 platform: platform,
-                minVersion: minVersion
+                minVersion: minVersion,
+                brief: brief
             )
         case .json:
+            // JSON keeps full chunks so programmatic consumers (LLMs, scripts)
+            // never lose data — they can truncate themselves if needed.
             printSmartReportJSON(result: result, question: question)
         }
+    }
+
+    /// First N non-blank lines of a chunk, used by `--brief` mode. Default
+    /// 12 — enough context to actually understand what each result is about
+    /// (covers a full overview paragraph + start of the meat) without burying
+    /// the next result. Drop smaller via `lines:` if a future flag wants
+    /// triage-density output.
+    static func briefExcerpt(of chunk: String, lines: Int = 12) -> String {
+        let nonEmpty = chunk
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let take = nonEmpty.prefix(lines)
+        let truncated = take.joined(separator: "\n")
+        return nonEmpty.count > lines ? truncated + "\n…" : truncated
     }
 
     private static func printSmartReportText(
@@ -223,7 +243,8 @@ extension SearchCommand {
         question: String,
         availabilityFilterActive: Bool,
         platform: String?,
-        minVersion: String?
+        minVersion: String?,
+        brief: Bool
     ) {
         if result.candidates.isEmpty {
             let sources = result.contributingSources.isEmpty
@@ -253,8 +274,37 @@ extension SearchCommand {
             )
             print("    \(cand.identifier)")
             print(String(repeating: "─", count: 70))
-            print(cand.chunk)
+            print(brief ? briefExcerpt(of: cand.chunk) : cand.chunk)
+            if let readCmd = readFullCommand(for: cand) {
+                print("")
+                print("▶ Read full: \(readCmd)")
+            }
             print("")
+        }
+
+        printSeeAlsoText(question: question, result: result)
+        printTipsFooterText(availabilityFilterActive: availabilityFilterActive)
+    }
+
+    private static func printSeeAlsoText(
+        question: String,
+        result: Search.SmartResult
+    ) {
+        guard !result.contributingSources.isEmpty else { return }
+        print(String(repeating: "─", count: 70))
+        print("See also — drill into one source:")
+        for source in result.contributingSources {
+            print("  cupertino search \"\(question)\" --source \(source)")
+        }
+        print("")
+    }
+
+    private static func printTipsFooterText(availabilityFilterActive: Bool) {
+        print("💡 Narrow with --source <name>: "
+            + Shared.Constants.Search.availableSources.joined(separator: ", "))
+        if !availabilityFilterActive {
+            print("💡 Filter by platform: --platform iOS --min-version 16.0  "
+                + "(or macOS / tvOS / watchOS / visionOS)")
         }
     }
 
@@ -285,7 +335,8 @@ extension SearchCommand {
         question: String,
         availabilityFilterActive: Bool,
         platform: String?,
-        minVersion: String?
+        minVersion: String?,
+        brief: Bool
     ) {
         print("# Results for `\(question)`")
         print("")
@@ -313,9 +364,41 @@ extension SearchCommand {
                     + "  •  **Score:** \(String(format: "%.4f", fused.score))"
             )
             print("- **Id:** `\(cand.identifier)`")
+            if let readCmd = readFullCommand(for: cand) {
+                print("- **Read full:** `\(readCmd)`")
+            }
             print("")
-            print(cand.chunk)
+            print(brief ? briefExcerpt(of: cand.chunk) : cand.chunk)
             print("")
+        }
+
+        printSeeAlsoMarkdown(question: question, result: result)
+        printTipsFooterMarkdown(availabilityFilterActive: availabilityFilterActive)
+    }
+
+    private static func printSeeAlsoMarkdown(
+        question: String,
+        result: Search.SmartResult
+    ) {
+        guard !result.contributingSources.isEmpty else { return }
+        print("---")
+        print("")
+        print("**See also — drill into one source:**")
+        print("")
+        for source in result.contributingSources {
+            print("- `cupertino search \"\(question)\" --source \(source)`")
+        }
+        print("")
+    }
+
+    private static func printTipsFooterMarkdown(availabilityFilterActive: Bool) {
+        let sources = Shared.Constants.Search.availableSources.joined(separator: ", ")
+        print("> 💡 **Narrow with `--source <name>`:** \(sources)")
+        if !availabilityFilterActive {
+            print(
+                "> 💡 **Filter by platform:** `--platform iOS --min-version 16.0` "
+                    + "(or `macOS` / `tvOS` / `watchOS` / `visionOS`)"
+            )
         }
     }
 
@@ -352,6 +435,10 @@ extension SearchCommand {
             let score: Double
             let kind: String?
             let metadata: [String: String]
+            /// CLI command an LLM should run to read the full document.
+            /// Nil for sources without a first-party read command (packages
+            /// today — read directly from `~/.cupertino/packages/<id>`).
+            let readFullCommand: String?
         }
         struct ReportOut: Encodable {
             let question: String
@@ -370,7 +457,8 @@ extension SearchCommand {
                     chunk: fused.candidate.chunk,
                     score: fused.score,
                     kind: fused.candidate.kind,
-                    metadata: fused.candidate.metadata
+                    metadata: fused.candidate.metadata,
+                    readFullCommand: readFullCommand(for: fused.candidate)
                 )
             }
         )
@@ -380,5 +468,31 @@ extension SearchCommand {
            let json = String(data: data, encoding: .utf8) {
             Log.output(json)
         }
+    }
+
+    // MARK: - Read-full command per source
+
+    /// CLI command a downstream consumer (LLM, script, human) should run to
+    /// read the full document a chunk was excerpted from. After #239's
+    /// option-B unification, every source resolves through the single
+    /// `cupertino read <id> --source <name>` entry point; the source flag
+    /// disambiguates sample-file vs. package paths (both have shape
+    /// `<seg>/<seg>/<seg>`). Returns nil only for unknown sources.
+    static func readFullCommand(for candidate: Search.SmartCandidate) -> String? {
+        let source: String
+        switch candidate.source {
+        case Shared.Constants.SourcePrefix.appleDocs,
+             Shared.Constants.SourcePrefix.appleArchive,
+             Shared.Constants.SourcePrefix.hig,
+             Shared.Constants.SourcePrefix.swiftEvolution,
+             Shared.Constants.SourcePrefix.swiftOrg,
+             Shared.Constants.SourcePrefix.swiftBook,
+             Shared.Constants.SourcePrefix.samples,
+             Shared.Constants.SourcePrefix.packages:
+            source = candidate.source
+        default:
+            return nil
+        }
+        return "cupertino read \(candidate.identifier) --source \(source)"
     }
 }

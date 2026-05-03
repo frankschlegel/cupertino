@@ -163,6 +163,17 @@ struct SearchCommand: AsyncParsableCommand {
     )
     var skipSamples: Bool = false
 
+    @Flag(
+        name: .long,
+        help: """
+        Trim each result's excerpt to its first few lines for quick triage. \
+        Read-full link, tips, and see-also still print. Fan-out mode + \
+        text/markdown only — JSON keeps full chunks for programmatic \
+        consumers. (#239)
+        """
+    )
+    var brief: Bool = false
+
     @Option(
         name: .long,
         help: """
@@ -250,7 +261,8 @@ struct SearchCommand: AsyncParsableCommand {
             availabilityFilterActive: availabilityFilter != nil,
             platform: platform,
             minVersion: minVersion,
-            format: format
+            format: format,
+            brief: brief
         )
     }
 

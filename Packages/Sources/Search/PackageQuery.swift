@@ -52,6 +52,43 @@ extension Search {
             }
         }
 
+        /// Read a single package file's stored content out of
+        /// `package_files_fts`. Used by `Services.ReadService` for the
+        /// `cupertino read <owner>/<repo>/<relpath> --source packages`
+        /// path so the read source matches what was indexed (no need
+        /// to keep the on-disk packages tree around when consumers
+        /// got packages.db via `cupertino setup`).
+        public func fileContent(
+            owner: String,
+            repo: String,
+            relpath: String
+        ) throws -> String? {
+            guard let database else { throw PackageQueryError.databaseNotOpen }
+
+            let sql = """
+            SELECT content
+            FROM package_files_fts
+            WHERE owner = ? AND repo = ? AND relpath = ?
+            LIMIT 1;
+            """
+
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                let message = String(cString: sqlite3_errmsg(database))
+                throw PackageQueryError.sqliteError(message)
+            }
+
+            sqlite3_bind_text(statement, 1, (owner as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (repo as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 3, (relpath as NSString).utf8String, -1, nil)
+
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            guard let ptr = sqlite3_column_text(statement, 0) else { return nil }
+            return String(cString: ptr)
+        }
+
         /// Optional platform-availability filter (#220).
         /// `platform` is one of `iOS`, `macOS`, `tvOS`, `watchOS`, `visionOS`
         /// (case-insensitive). `minVersion` is a dotted decimal like
