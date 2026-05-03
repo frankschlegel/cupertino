@@ -2,6 +2,7 @@ import ArgumentParser
 import Availability
 import Core
 import Foundation
+import Ingest
 import Logging
 import Search
 import Shared
@@ -299,18 +300,18 @@ struct FetchCommand: AsyncParsableCommand {
         let url = try validateStartURL()
         let outputDirectory = try await determineOutputDirectory(for: url)
         if startClean {
-            try Self.clearSavedSession(at: outputDirectory)
+            try Ingest.Session.clearSavedSession(at: outputDirectory)
         }
         if retryErrors {
-            try Self.requeueErroredURLs(at: outputDirectory, maxDepth: maxDepth)
+            try Ingest.Session.requeueErroredURLs(at: outputDirectory, maxDepth: maxDepth)
         }
         if let baselinePath = baseline {
             let baselineURL = URL(fileURLWithPath: baselinePath).expandingTildeInPath
-            try Self.requeueFromBaseline(at: outputDirectory, baselineDir: baselineURL, maxDepth: maxDepth)
+            try Ingest.Session.requeueFromBaseline(at: outputDirectory, baselineDir: baselineURL, maxDepth: maxDepth)
         }
         if let urlsPath = urls {
             let urlsURL = URL(fileURLWithPath: urlsPath).expandingTildeInPath
-            try Self.enqueueURLsFromFile(
+            try Ingest.Session.enqueueURLsFromFile(
                 at: outputDirectory,
                 urlsFile: urlsURL,
                 maxDepth: maxDepth,
@@ -321,65 +322,9 @@ struct FetchCommand: AsyncParsableCommand {
         try await executeCrawl(with: config)
     }
 
-    /// Wipe `crawlState` from `metadata.json` so the Crawler treats this as a
-    /// fresh run. Page-level state (frameworks, stats, pages dict) is preserved
-    /// — `--force` is what re-fetches existing pages on disk; `--start-clean`
-    /// just discards the queue/visited resume marker.
-    ///
-    /// `internal static` so tests in `CLICommandTests` can exercise it directly
-    /// without parsing a full `FetchCommand` from args.
-    static func clearSavedSession(at outputDirectory: URL) throws {
-        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        guard FileManager.default.fileExists(atPath: metadataFile.path) else {
-            Logging.ConsoleLogger.info("🧹 --start-clean: no saved session to clear at \(outputDirectory.path)")
-            return
-        }
-        var metadata = try CrawlMetadata.load(from: metadataFile)
-        metadata.crawlState = nil
-        try metadata.save(to: metadataFile)
-        Logging.ConsoleLogger.info("🧹 --start-clean: cleared saved session at \(metadataFile.path)")
-    }
+    // clearSavedSession lifted to Ingest.Session.clearSavedSession (#247)
 
-    /// Re-queue URLs that the crawler visited but never saved to the pages
-    /// dict — typically pages whose save failed (filename too long, write
-    /// errors, etc.). They get removed from the visited set and appended to
-    /// the queue at the configured `maxDepth`, so the resumed crawl retries
-    /// them without re-discovering their children (already in the queue).
-    ///
-    /// `internal static` so tests can exercise it directly.
-    static func requeueErroredURLs(at outputDirectory: URL, maxDepth: Int) throws {
-        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        guard FileManager.default.fileExists(atPath: metadataFile.path) else {
-            Logging.ConsoleLogger.info("🔁 --retry-errors: no metadata.json at \(outputDirectory.path)")
-            return
-        }
-        var metadata = try CrawlMetadata.load(from: metadataFile)
-        guard var crawlState = metadata.crawlState else {
-            Logging.ConsoleLogger.info("🔁 --retry-errors: no saved crawlState — nothing to retry")
-            return
-        }
-
-        let savedURLs = Set(metadata.pages.keys)
-        let errored = crawlState.visited.subtracting(savedURLs)
-        guard !errored.isEmpty else {
-            Logging.ConsoleLogger.info("🔁 --retry-errors: no errored URLs to retry (every visited URL is in the pages dict)")
-            return
-        }
-
-        // Prepend so retries happen before the existing queue tail —
-        // semantically "retry errors first" matches user expectation when
-        // running `--retry-errors` after a save-bug fix.
-        let erroredItems = errored.map { QueuedURL(url: $0, depth: maxDepth) }
-        crawlState.queue = erroredItems + crawlState.queue
-        for url in errored {
-            crawlState.visited.remove(url)
-        }
-        crawlState.lastSaveTime = Date()
-        metadata.crawlState = crawlState
-        try metadata.save(to: metadataFile)
-
-        Logging.ConsoleLogger.info("🔁 --retry-errors: re-queued \(errored.count) errored URL(s) at depth \(maxDepth) (front of queue)")
-    }
+    // requeueErroredURLs lifted to Ingest.Session.requeueErroredURLs (#247)
 
     /// Inject URLs from a known-good baseline corpus that aren't in the
     /// current crawl's known set (queue ∪ visited ∪ pages keys). Comparison
@@ -392,71 +337,7 @@ struct FetchCommand: AsyncParsableCommand {
     /// `maxDepth` so the resumed crawl doesn't re-discover their children
     /// (which the baseline already crawled).
     ///
-    /// `internal static` so tests can exercise it directly.
-    static func requeueFromBaseline(at outputDirectory: URL, baselineDir: URL, maxDepth: Int) throws {
-        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        guard FileManager.default.fileExists(atPath: metadataFile.path) else {
-            Logging.ConsoleLogger.info("🩹 --baseline: no metadata.json at \(outputDirectory.path)")
-            return
-        }
-        guard FileManager.default.fileExists(atPath: baselineDir.path) else {
-            Logging.ConsoleLogger.info("🩹 --baseline: directory not found at \(baselineDir.path)")
-            return
-        }
-
-        var metadata = try CrawlMetadata.load(from: metadataFile)
-        guard var crawlState = metadata.crawlState else {
-            Logging.ConsoleLogger.info("🩹 --baseline: no saved crawlState — run with auto-resume or --start-clean first")
-            return
-        }
-
-        // Collect baseline URLs by reading each .json file's `url` field.
-        let baselineURLs = collectBaselineURLs(in: baselineDir)
-        guard !baselineURLs.isEmpty else {
-            Logging.ConsoleLogger.info("🩹 --baseline: no URLs found in baseline at \(baselineDir.path)")
-            return
-        }
-
-        // Build the case-insensitive known-set from queue ∪ visited ∪ pages.
-        var knownLowercased = Set<String>()
-        knownLowercased.reserveCapacity(crawlState.visited.count + crawlState.queue.count + metadata.pages.count)
-        for url in crawlState.visited {
-            knownLowercased.insert(lowercaseDocPath(url))
-        }
-        for queued in crawlState.queue {
-            knownLowercased.insert(lowercaseDocPath(queued.url))
-        }
-        for url in metadata.pages.keys {
-            knownLowercased.insert(lowercaseDocPath(url))
-        }
-
-        // Find baseline URLs not in the known set (case-insensitive).
-        var missing: [String] = []
-        var seenLowercased = Set<String>()
-        for url in baselineURLs {
-            let key = lowercaseDocPath(url)
-            if !knownLowercased.contains(key), seenLowercased.insert(key).inserted {
-                missing.append(url)
-            }
-        }
-        guard !missing.isEmpty else {
-            Logging.ConsoleLogger.info("🩹 --baseline: every baseline URL already known (\(baselineURLs.count) URLs checked)")
-            return
-        }
-
-        // Prepend at maxDepth — same approach as --retry-errors so children
-        // aren't re-discovered (baseline already crawled them).
-        let injected = missing.map { QueuedURL(url: $0, depth: maxDepth) }
-        crawlState.queue = injected + crawlState.queue
-        crawlState.lastSaveTime = Date()
-        metadata.crawlState = crawlState
-        try metadata.save(to: metadataFile)
-
-        Logging.ConsoleLogger.info(
-            "🩹 --baseline: prepended \(missing.count) missing URL(s) "
-                + "from \(baselineURLs.count)-URL baseline at depth \(maxDepth)"
-        )
-    }
+    // requeueFromBaseline lifted to Ingest.Session.requeueFromBaseline (#247)
 
     /// Enqueue every URL listed in `urlsFile` (one URL per line) at
     /// depth 0. The crawler then follows each URL's outgoing links up
@@ -466,111 +347,8 @@ struct FetchCommand: AsyncParsableCommand {
     /// and blank lines are ignored. Initialises `crawlState` if missing
     /// so the helper works against a fresh corpus too. (#210)
     ///
-    /// `internal static` so tests can exercise it directly.
-    /// `maxDepth` parameter is retained for symmetry with sibling helpers
-    /// even though the URLs are always enqueued at depth 0.
-    static func enqueueURLsFromFile(
-        at outputDirectory: URL,
-        urlsFile: URL,
-        maxDepth: Int,
-        startURL: URL
-    ) throws {
-        let lines = try String(contentsOf: urlsFile, encoding: .utf8)
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-
-        guard !lines.isEmpty else {
-            Logging.ConsoleLogger.info("📥 --urls: file \(urlsFile.path) had no URLs to enqueue")
-            return
-        }
-
-        // Validate each line is a usable URL with a scheme. URL(string:) is
-        // permissive and accepts bare words ("foo bar") as relative URLs;
-        // the scheme check rejects those without rejecting common variants
-        // we accept (http, https, file, etc.).
-        var validURLs: [String] = []
-        for raw in lines {
-            guard let parsed = URL(string: raw),
-                  let scheme = parsed.scheme,
-                  !scheme.isEmpty
-            else {
-                throw FetchURLsError.invalidURL(line: raw)
-            }
-            validURLs.append(raw)
-        }
-
-        let metadataFile = outputDirectory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        try FileManager.default.createDirectory(
-            at: outputDirectory,
-            withIntermediateDirectories: true
-        )
-
-        var metadata: CrawlMetadata
-        if FileManager.default.fileExists(atPath: metadataFile.path) {
-            metadata = try CrawlMetadata.load(from: metadataFile)
-        } else {
-            metadata = CrawlMetadata()
-        }
-
-        var crawlState = metadata.crawlState ?? CrawlSessionState(
-            startURL: startURL.absoluteString,
-            outputDirectory: outputDirectory.path
-        )
-
-        // Enqueue at depth 0 so the crawler follows children up to
-        // `configuration.maxDepth`. This is the deliberate semantic
-        // difference from --retry-errors and --baseline, which queue
-        // at maxDepth precisely to suppress descent.
-        let newItems = validURLs.map { QueuedURL(url: $0, depth: 0) }
-        crawlState.queue = newItems + crawlState.queue
-        crawlState.lastSaveTime = Date()
-        metadata.crawlState = crawlState
-        try metadata.save(to: metadataFile)
-
-        Logging.ConsoleLogger.info(
-            "📥 --urls: enqueued \(validURLs.count) URL(s) from \(urlsFile.lastPathComponent) at depth 0 (descent up to maxDepth=\(maxDepth))"
-        )
-    }
-
-    /// Walk the baseline directory and return every URL recorded in any
-    /// JSON page file's top-level `url` field. Skips files that fail to
-    /// parse — corrupt baselines shouldn't block a recrawl.
-    private static func collectBaselineURLs(in baselineDir: URL) -> [String] {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: baselineDir,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        var urls: [String] = []
-        for case let fileURL as URL in enumerator {
-            guard fileURL.pathExtension.lowercased() == "json" else { continue }
-            guard let data = try? Data(contentsOf: fileURL),
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let dict = object as? [String: Any],
-                  let url = dict["url"] as? String,
-                  !url.isEmpty
-            else { continue }
-            urls.append(url)
-        }
-        return urls
-    }
-
-    /// Lowercase the `/documentation/...` path portion of an Apple docs URL
-    /// so case differences (HTML extractor's lowercase vs JSON extractor's
-    /// case-preserving output) don't produce false-positive gaps.
-    private static func lowercaseDocPath(_ urlString: String) -> String {
-        guard let docMarkerRange = urlString.range(of: "/documentation/") else {
-            return urlString.lowercased()
-        }
-        let prefix = urlString[..<docMarkerRange.upperBound]
-        let path = urlString[docMarkerRange.upperBound...].lowercased()
-        return prefix + path
-    }
+    // enqueueURLsFromFile + collectBaselineURLs + lowercaseDocPath all lifted
+    // to Ingest.Session in #247.
 
     private func validateStartURL() throws -> URL {
         let urlString = startURL ?? type.defaultURL
@@ -596,7 +374,7 @@ struct FetchCommand: AsyncParsableCommand {
         ]
 
         for candidate in candidates {
-            if let sessionDir = Self.checkForSession(at: candidate, matching: url) {
+            if let sessionDir = Ingest.Session.checkForSession(at: candidate, matching: url) {
                 return sessionDir
             }
         }
@@ -604,31 +382,7 @@ struct FetchCommand: AsyncParsableCommand {
         return try await scanCupertinoDirectory(for: url)
     }
 
-    /// `internal static` so tests can hit this without parsing a full
-    /// `FetchCommand` from args. Pure function on its inputs.
-    static func checkForSession(at directory: URL, matching url: URL) -> URL? {
-        let metadataFile = directory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        guard FileManager.default.fileExists(atPath: metadataFile.path),
-              let data = try? Data(contentsOf: metadataFile),
-              let metadata = try? JSONCoding.decode(CrawlMetadata.self, from: data),
-              let session = metadata.crawlState,
-              session.isActive,
-              session.startURL == url.absoluteString
-        else {
-            return nil
-        }
-        // Return the directory where we *found* metadata.json, not the path
-        // stored inside it. The saved `session.outputDirectory` is an absolute
-        // path captured on the machine that originally ran the crawl — when
-        // the directory is rsynced to another host (different home dir, mounted
-        // volume, container), that string points at nothing. The directory we
-        // just opened a file from is, by definition, the live output dir. The
-        // saved path is preserved in the JSON for diagnostic purposes only.
-        Logging.ConsoleLogger.info(
-            "📂 Found existing session, resuming to: \(directory.path)"
-        )
-        return directory
-    }
+    // checkForSession lifted to Ingest.Session.checkForSession (#247)
 
     private func scanCupertinoDirectory(for url: URL) async throws -> URL? {
         let cupertinoDir = Shared.Constants.defaultBaseDirectory
@@ -646,7 +400,7 @@ struct FetchCommand: AsyncParsableCommand {
             guard isDirectory == true else {
                 continue
             }
-            if let sessionDir = Self.checkForSession(at: dir, matching: url) {
+            if let sessionDir = Ingest.Session.checkForSession(at: dir, matching: url) {
                 return sessionDir
             }
         }
@@ -1265,15 +1019,4 @@ struct FetchCommand: AsyncParsableCommand {
     }
 }
 
-// MARK: - --urls errors (#210)
-
-enum FetchURLsError: Error, LocalizedError {
-    case invalidURL(line: String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .invalidURL(line):
-            return "--urls: cannot parse URL from line: \(line)"
-        }
-    }
-}
+// FetchURLsError lifted to Ingest.FetchURLsError (#247)

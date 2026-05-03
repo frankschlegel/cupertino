@@ -1,6 +1,7 @@
 @testable import CLI
 @testable import Core
 import Foundation
+import Ingest
 @testable import Shared
 import Testing
 import TestSupport
@@ -18,7 +19,7 @@ import TestSupport
 //     from the seed URL with an empty queue
 //
 // These tests guard the two behaviors at the persistence layer (CrawlerState
-// for auto-resume, FetchCommand.clearSavedSession for --start-clean), so a
+// for auto-resume, Ingest.Session.clearSavedSession for --start-clean), so a
 // future refactor that breaks either path fails CI instead of silently
 // stranding users on stale or non-resumable crawls.
 
@@ -65,19 +66,19 @@ struct ResumeAndStartCleanTests {
     // MARK: - --start-clean
 
     @Test("--start-clean is a no-op when no metadata.json exists")
-    func startCleanNoMetadataIsNoOp() async throws {
+    func startCleanNoMetadataIsNoOp() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         // Should not throw.
-        try FetchCommand.clearSavedSession(at: tempDir)
+        try Ingest.Session.clearSavedSession(at: tempDir)
 
         // Should not have created the file as a side effect.
         #expect(!FileManager.default.fileExists(atPath: Self.metadataFile(in: tempDir).path))
     }
 
     @Test("--start-clean wipes crawlState while preserving the rest of metadata.json")
-    func startCleanWipesCrawlStateOnly() async throws {
+    func startCleanWipesCrawlStateOnly() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -101,7 +102,7 @@ struct ResumeAndStartCleanTests {
         #expect(before.crawlState?.queue.count == 2)
         #expect(before.stats.totalPages == 3)
 
-        try FetchCommand.clearSavedSession(at: tempDir)
+        try Ingest.Session.clearSavedSession(at: tempDir)
 
         // crawlState is gone; the other fields are intact (so we don't lose
         // accumulated stats / page hashes — those are what change-detection
@@ -113,7 +114,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--start-clean leaves the file readable and re-runnable")
-    func startCleanLeavesFileValidJSON() async throws {
+    func startCleanLeavesFileValidJSON() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -126,7 +127,7 @@ struct ResumeAndStartCleanTests {
             queue: [(url: "http://127.0.0.1:1/q", depth: 0)]
         )
 
-        try FetchCommand.clearSavedSession(at: tempDir)
+        try Ingest.Session.clearSavedSession(at: tempDir)
 
         // The file must be valid JSON parsable as CrawlMetadata — if it's
         // truncated or corrupt, the next `cupertino fetch` will throw at
@@ -136,7 +137,7 @@ struct ResumeAndStartCleanTests {
 
         // And running --start-clean a second time on the already-cleaned file
         // is also a no-throw no-op.
-        try FetchCommand.clearSavedSession(at: tempDir)
+        try Ingest.Session.clearSavedSession(at: tempDir)
         let twiceCleaned = try CrawlMetadata.load(from: file)
         #expect(twiceCleaned.crawlState == nil)
     }
@@ -176,16 +177,16 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--retry-errors is a no-op when no metadata.json exists")
-    func retryErrorsNoMetadataIsNoOp() async throws {
+    func retryErrorsNoMetadataIsNoOp() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try FetchCommand.requeueErroredURLs(at: tempDir, maxDepth: 15)
+        try Ingest.Session.requeueErroredURLs(at: tempDir, maxDepth: 15)
         #expect(!FileManager.default.fileExists(atPath: Self.metadataFile(in: tempDir).path))
     }
 
     @Test("--retry-errors does nothing when every visited URL is already in pages dict")
-    func retryErrorsNoOpWhenAllSaved() async throws {
+    func retryErrorsNoOpWhenAllSaved() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -201,7 +202,7 @@ struct ResumeAndStartCleanTests {
             erroredURLs: []
         )
 
-        try FetchCommand.requeueErroredURLs(at: tempDir, maxDepth: 15)
+        try Ingest.Session.requeueErroredURLs(at: tempDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: file)
         #expect(after.crawlState?.queue.isEmpty == true, "queue should remain empty")
@@ -209,7 +210,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--retry-errors re-queues visited URLs that aren't in pages dict")
-    func retryErrorsRequeuesUnsavedURLs() async throws {
+    func retryErrorsRequeuesUnsavedURLs() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -236,7 +237,7 @@ struct ResumeAndStartCleanTests {
             erroredURLs: [erroredA, erroredB]
         )
 
-        try FetchCommand.requeueErroredURLs(at: tempDir, maxDepth: 15)
+        try Ingest.Session.requeueErroredURLs(at: tempDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: file)
         let queueURLs = Set(after.crawlState?.queue.map(\.url) ?? [])
@@ -278,7 +279,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--baseline injects URLs that exist in baseline but not in claw's known set")
-    func baselineInjectsMissingURLs() async throws {
+    func baselineInjectsMissingURLs() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -311,7 +312,7 @@ struct ResumeAndStartCleanTests {
             erroredURLs: []
         )
 
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         let queueURLs = Set(after.crawlState?.queue.map(\.url) ?? [])
@@ -322,7 +323,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--baseline matching is case-insensitive on the documentation path")
-    func baselineCaseInsensitiveMatching() async throws {
+    func baselineCaseInsensitiveMatching() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -344,7 +345,7 @@ struct ResumeAndStartCleanTests {
             erroredURLs: []
         )
 
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         // Already known case-insensitively → should NOT be injected.
@@ -355,7 +356,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--baseline is a no-op when baseline directory doesn't exist")
-    func baselineMissingDirectoryIsNoOp() async throws {
+    func baselineMissingDirectoryIsNoOp() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -367,14 +368,14 @@ struct ResumeAndStartCleanTests {
         )
 
         let nonExistent = tempDir.appendingPathComponent("nope")
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: nonExistent, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: nonExistent, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         #expect(after.crawlState?.queue.isEmpty == true)
     }
 
     @Test("--baseline is a no-op when baseline is empty")
-    func baselineEmptyDirectoryIsNoOp() async throws {
+    func baselineEmptyDirectoryIsNoOp() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -387,13 +388,13 @@ struct ResumeAndStartCleanTests {
             erroredURLs: []
         )
 
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         #expect(after.crawlState?.queue.isEmpty == true)
     }
 
     @Test("--baseline skips files without a url field and non-JSON files")
-    func baselineSkipsMalformedFiles() async throws {
+    func baselineSkipsMalformedFiles() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -425,7 +426,7 @@ struct ResumeAndStartCleanTests {
             erroredURLs: []
         )
 
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         let queueURLs = (after.crawlState?.queue ?? []).map(\.url)
@@ -433,7 +434,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--baseline injected items are prepended (queue front), not appended")
-    func baselinePrependsToQueueFront() async throws {
+    func baselinePrependsToQueueFront() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -455,7 +456,7 @@ struct ResumeAndStartCleanTests {
             queue: [(url: "https://developer.apple.com/documentation/uikit/already-queued", depth: 0)]
         )
 
-        try FetchCommand.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
+        try Ingest.Session.requeueFromBaseline(at: tempDir, baselineDir: baselineDir, maxDepth: 15)
 
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         let queue = after.crawlState?.queue ?? []
@@ -467,7 +468,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--retry-errors gracefully handles missing crawlState")
-    func retryErrorsHandlesMissingCrawlState() async throws {
+    func retryErrorsHandlesMissingCrawlState() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -476,7 +477,7 @@ struct ResumeAndStartCleanTests {
         try metadata.save(to: Self.metadataFile(in: tempDir))
 
         // Should not throw and should not synthesize a crawlState.
-        try FetchCommand.requeueErroredURLs(at: tempDir, maxDepth: 15)
+        try Ingest.Session.requeueErroredURLs(at: tempDir, maxDepth: 15)
         let after = try CrawlMetadata.load(from: Self.metadataFile(in: tempDir))
         #expect(after.crawlState == nil)
     }
@@ -558,7 +559,7 @@ struct ResumeAndStartCleanTests {
         )
 
         // Wipe via the same code path the CLI uses.
-        try FetchCommand.clearSavedSession(at: tempDir)
+        try Ingest.Session.clearSavedSession(at: tempDir)
 
         // The Crawler's resume read sees nothing, so it'll start fresh from
         // the seed URL — exactly what --start-clean should produce.
@@ -583,7 +584,7 @@ struct ResumeAndStartCleanTests {
     // metadata.json — that's the live output directory by definition.
 
     @Test("checkForSession returns the directory where metadata.json was found, not the saved path")
-    func checkForSessionReturnsFoundDirectoryNotSavedPath() async throws {
+    func checkForSessionReturnsFoundDirectoryNotSavedPath() throws {
         let foundDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: foundDir) }
 
@@ -603,9 +604,9 @@ struct ResumeAndStartCleanTests {
             queue: [(url: "https://developer.apple.com/documentation/foundation", depth: 0)]
         )
 
-        let resolved = FetchCommand.checkForSession(
+        let resolved = try Ingest.Session.checkForSession(
             at: foundDir,
-            matching: URL(string: "https://developer.apple.com/documentation/")!
+            matching: #require(URL(string: "https://developer.apple.com/documentation/"))
         )
 
         // BUG (pre-fix): would return URL(fileURLWithPath: foreignPath) —
@@ -627,7 +628,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("checkForSession returns nil when start URL doesn't match")
-    func checkForSessionReturnsNilOnStartURLMismatch() async throws {
+    func checkForSessionReturnsNilOnStartURLMismatch() throws {
         let dir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -641,15 +642,15 @@ struct ResumeAndStartCleanTests {
 
         // A different start URL (different framework crawl) — should not be
         // confused for a resumable session.
-        let resolved = FetchCommand.checkForSession(
+        let resolved = try Ingest.Session.checkForSession(
             at: dir,
-            matching: URL(string: "https://docs.swift.org/swift-book")!
+            matching: #require(URL(string: "https://docs.swift.org/swift-book"))
         )
         #expect(resolved == nil)
     }
 
     @Test("checkForSession returns nil when crawlState.isActive is false")
-    func checkForSessionReturnsNilWhenInactive() async throws {
+    func checkForSessionReturnsNilWhenInactive() throws {
         let dir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -662,27 +663,27 @@ struct ResumeAndStartCleanTests {
             isActive: false // ← finished cleanly, no active session to resume
         )
 
-        let resolved = FetchCommand.checkForSession(
+        let resolved = try Ingest.Session.checkForSession(
             at: dir,
-            matching: URL(string: "https://developer.apple.com/documentation/")!
+            matching: #require(URL(string: "https://developer.apple.com/documentation/"))
         )
         #expect(resolved == nil)
     }
 
     @Test("checkForSession returns nil when no metadata.json exists")
-    func checkForSessionReturnsNilWhenMissing() async throws {
+    func checkForSessionReturnsNilWhenMissing() throws {
         let dir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let resolved = FetchCommand.checkForSession(
+        let resolved = try Ingest.Session.checkForSession(
             at: dir,
-            matching: URL(string: "https://developer.apple.com/documentation/")!
+            matching: #require(URL(string: "https://developer.apple.com/documentation/"))
         )
         #expect(resolved == nil)
     }
 
     @Test("checkForSession is the right answer even when foreign path coincidentally exists")
-    func checkForSessionStillReturnsFoundDirEvenIfForeignPathExists() async throws {
+    func checkForSessionStillReturnsFoundDirEvenIfForeignPathExists() throws {
         // Belt-and-suspenders: even if a directory happens to exist at the
         // saved foreign path, `checkForSession` must still return the dir
         // where the metadata was actually located. Otherwise a stale
@@ -703,9 +704,9 @@ struct ResumeAndStartCleanTests {
             queue: []
         )
 
-        let resolved = FetchCommand.checkForSession(
+        let resolved = try Ingest.Session.checkForSession(
             at: realFoundDir,
-            matching: URL(string: "https://developer.apple.com/documentation/")!
+            matching: #require(URL(string: "https://developer.apple.com/documentation/"))
         )
         #expect(
             resolved == realFoundDir,
@@ -749,7 +750,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("validateMetadata accepts rsynced metadata: foreign filePath but file exists at portable path")
-    func validateMetadataRsynced() async throws {
+    func validateMetadataRsynced() throws {
         let outputDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: outputDir) }
 
@@ -776,7 +777,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("validateMetadata rejects metadata when no actual files exist (lying metadata)")
-    func validateMetadataRejectsLies() async throws {
+    func validateMetadataRejectsLies() throws {
         let outputDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: outputDir) }
 
@@ -799,7 +800,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("rebasePagePaths rewrites foreign filePaths to the current outputDir")
-    func rebasePathsRewrites() async throws {
+    func rebasePathsRewrites() {
         // Use UUID-randomised paths so they're guaranteed not to exist on
         // the test host — rebasePagePaths only rewrites entries whose saved
         // path doesn't resolve. (A literal path like /Users/foo/.cupertino
@@ -837,7 +838,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("rebasePagePaths is idempotent — running twice does not change paths")
-    func rebasePathsIdempotent() async throws {
+    func rebasePathsIdempotent() {
         let outputDir = URL(fileURLWithPath: "/Volumes/ClawSSD/.cupertino/docs")
         var metadata = CrawlMetadata()
         metadata.pages["u1"] = PageMetadata(
@@ -927,14 +928,14 @@ struct ResumeAndStartCleanTests {
             "http://127.0.0.1:1/v2",
             "http://127.0.0.1:1/v3",
         ]
-        let queue: [(url: URL, depth: Int)] = [
-            (url: URL(string: "http://127.0.0.1:1/q1")!, depth: 0),
-            (url: URL(string: "http://127.0.0.1:1/q2")!, depth: 1),
+        let queue: [(url: URL, depth: Int)] = try [
+            (url: #require(URL(string: "http://127.0.0.1:1/q1")), depth: 0),
+            (url: #require(URL(string: "http://127.0.0.1:1/q2")), depth: 1),
         ]
         try await writer.saveSessionState(
             visited: visited,
             queue: queue,
-            startURL: URL(string: "http://127.0.0.1:1/seed")!,
+            startURL: #require(URL(string: "http://127.0.0.1:1/seed")),
             outputDirectory: tempDir
         )
 
@@ -960,7 +961,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--urls enqueues every URL at depth 0 into a fresh corpus (so descent follows up to maxDepth)")
-    func urlsEnqueuesIntoFreshCorpus() async throws {
+    func urlsEnqueuesIntoFreshCorpus() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -970,7 +971,7 @@ struct ResumeAndStartCleanTests {
             "https://developer.apple.com/documentation/accessibility",
         ])
 
-        try FetchCommand.enqueueURLsFromFile(
+        try Ingest.Session.enqueueURLsFromFile(
             at: tempDir,
             urlsFile: urlsFile,
             maxDepth: 15,
@@ -989,7 +990,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--urls skips blank lines and # comments")
-    func urlsSkipsBlanksAndComments() async throws {
+    func urlsSkipsBlanksAndComments() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -1003,7 +1004,7 @@ struct ResumeAndStartCleanTests {
             "  ",
         ])
 
-        try FetchCommand.enqueueURLsFromFile(
+        try Ingest.Session.enqueueURLsFromFile(
             at: tempDir,
             urlsFile: urlsFile,
             maxDepth: 15,
@@ -1015,7 +1016,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--urls prepends to an existing crawlState queue")
-    func urlsPrependsToExistingQueue() async throws {
+    func urlsPrependsToExistingQueue() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -1036,7 +1037,7 @@ struct ResumeAndStartCleanTests {
             "https://developer.apple.com/documentation/new-b",
         ])
 
-        try FetchCommand.enqueueURLsFromFile(
+        try Ingest.Session.enqueueURLsFromFile(
             at: tempDir,
             urlsFile: urlsFile,
             maxDepth: 15,
@@ -1059,7 +1060,7 @@ struct ResumeAndStartCleanTests {
     }
 
     @Test("--urls throws on a malformed line")
-    func urlsThrowsOnInvalidLine() async throws {
+    func urlsThrowsOnInvalidLine() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -1070,20 +1071,20 @@ struct ResumeAndStartCleanTests {
 
         var threw = false
         do {
-            try FetchCommand.enqueueURLsFromFile(
+            try Ingest.Session.enqueueURLsFromFile(
                 at: tempDir,
                 urlsFile: urlsFile,
                 maxDepth: 15,
                 startURL: Self.seedURL
             )
-        } catch is FetchURLsError {
+        } catch is Ingest.FetchURLsError {
             threw = true
         }
         #expect(threw, "expected FetchURLsError on malformed input")
     }
 
     @Test("--urls is a no-op when the file has only blanks and comments")
-    func urlsIsNoOpForEmptyEffectiveContent() async throws {
+    func urlsIsNoOpForEmptyEffectiveContent() throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -1093,7 +1094,7 @@ struct ResumeAndStartCleanTests {
             "  # also a comment",
         ])
 
-        try FetchCommand.enqueueURLsFromFile(
+        try Ingest.Session.enqueueURLsFromFile(
             at: tempDir,
             urlsFile: urlsFile,
             maxDepth: 15,

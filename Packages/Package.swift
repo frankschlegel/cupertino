@@ -26,6 +26,7 @@ let macOSOnlyProducts: [Product] = [
     .singleTargetLibrary("Distribution"),
     .singleTargetLibrary("Diagnostics"),
     .singleTargetLibrary("Indexer"),
+    .singleTargetLibrary("Ingest"),
     .singleTargetLibrary("Resources"),
     .singleTargetLibrary("Availability"),
     .singleTargetLibrary("ASTIndexer"),
@@ -247,6 +248,16 @@ let targets: [Target] = {
         dependencies: ["Indexer", "Shared", "TestSupport"]
     )
 
+    // ---------- Ingest (#247: FetchCommand session + pipelines lift) ----------
+    let ingestTarget = Target.target(
+        name: "Ingest",
+        dependencies: ["Shared", "Logging"]
+    )
+    let ingestTestsTarget = Target.testTarget(
+        name: "IngestTests",
+        dependencies: ["Ingest", "Shared", "TestSupport"]
+    )
+
     let cliTarget = Target.executableTarget(
         name: "CLI",
         dependencies: [
@@ -259,6 +270,7 @@ let targets: [Target] = {
             "Distribution",
             "Diagnostics",
             "Indexer",
+            "Ingest",
             "Logging",
             "RemoteSync",
             "Availability",
@@ -324,7 +336,7 @@ let targets: [Target] = {
 
     let fetchTestsTarget = Target.testTarget(
         name: "FetchTests",
-        dependencies: ["CLI", "Core", "Shared", "TestSupport"],
+        dependencies: ["CLI", "Core", "Ingest", "Shared", "TestSupport"],
         path: "Tests/CLICommandTests/FetchTests"
     )
 
@@ -375,6 +387,8 @@ let targets: [Target] = {
         diagnosticsTestsTarget,
         indexerTarget,
         indexerTestsTarget,
+        ingestTarget,
+        ingestTestsTarget,
         mcpSupportTarget,
         mcpSupportTestsTarget,
         searchToolProviderTarget,
