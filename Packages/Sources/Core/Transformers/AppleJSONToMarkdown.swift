@@ -84,10 +84,19 @@ public struct AppleJSONToMarkdown: ContentTransformer, @unchecked Sendable {
         return markdown
     }
 
-    /// Get the JSON API URL from a documentation URL
+    /// Get the JSON API URL from a documentation URL.
+    ///
+    /// Only resolves for `developer.apple.com` (the Apple Developer
+    /// Documentation site, which serves DocC JSON under /tutorials/data/...).
+    /// Returns nil for any other host (Swift.org, swift.org book, etc.) so
+    /// the crawler falls through to its HTML path. Previously this method
+    /// constructed a `developer.apple.com/tutorials/data/...json` URL
+    /// regardless of input host, which on a Swift.org crawl returned
+    /// Apple's docs index — references all pointing at apple.com — and
+    /// then `shouldVisit` filtered them out as outside the swift.org
+    /// allowed-prefix set, leaving the crawl with 0 enqueued children.
     public static func jsonAPIURL(from documentationURL: URL) -> URL? {
-        // Web: https://developer.apple.com/documentation/accelerate/lapack-functions
-        // JSON: https://developer.apple.com/tutorials/data/documentation/accelerate/lapack-functions.json
+        guard documentationURL.host == "developer.apple.com" else { return nil }
         let path = documentationURL.path
         guard path.hasPrefix("/documentation") else { return nil }
         return URL(string: "https://developer.apple.com/tutorials/data\(path).json")

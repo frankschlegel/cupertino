@@ -408,3 +408,46 @@ struct AppleJSONToMarkdownExtractLinksTests {
         }
     }
 }
+
+// MARK: - jsonAPIURL host-guard
+
+@Suite("AppleJSONToMarkdown.jsonAPIURL host guard")
+struct JSONAPIURLHostGuardTests {
+    @Test("Returns the data URL for a developer.apple.com /documentation path")
+    func appleHostResolves() throws {
+        let url = try #require(URL(string: "https://developer.apple.com/documentation/swiftui/view"))
+        let result = try #require(AppleJSONToMarkdown.jsonAPIURL(from: url))
+        #expect(result.absoluteString == "https://developer.apple.com/tutorials/data/documentation/swiftui/view.json")
+    }
+
+    @Test("Returns nil for non-apple hosts so the crawler falls through to HTML")
+    func nonAppleHostsReturnNil() throws {
+        // Swift.org documentation root used to mistakenly resolve to apple's
+        // /tutorials/data/documentation.json — which exists but serves
+        // Apple's docs, not Swift.org's. The crawler then enqueued
+        // apple.com children that allowedPrefixes filtered out, leaving the
+        // crawl at 1 page processed.
+        let cases = [
+            "https://www.swift.org/documentation/",
+            "https://docs.swift.org/swift-book/documentation/the-swift-programming-language/",
+            "https://github.com/apple/swift-evolution",
+        ]
+        for raw in cases {
+            let url = try #require(URL(string: raw))
+            #expect(AppleJSONToMarkdown.jsonAPIURL(from: url) == nil, "\(raw) should not resolve to a JSON API URL")
+        }
+    }
+
+    @Test("Returns nil for apple.com paths outside /documentation")
+    func nonDocumentationPathsReturnNil() throws {
+        let cases = [
+            "https://developer.apple.com/",
+            "https://developer.apple.com/tutorials/",
+            "https://developer.apple.com/news/",
+        ]
+        for raw in cases {
+            let url = try #require(URL(string: raw))
+            #expect(AppleJSONToMarkdown.jsonAPIURL(from: url) == nil)
+        }
+    }
+}
