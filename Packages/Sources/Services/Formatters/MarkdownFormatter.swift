@@ -282,9 +282,17 @@ public struct UnifiedSearchInput: Sendable {
         public let docResults: [Search.Result]
         public let sampleResults: [SampleIndex.Project]
 
-        public var isEmpty: Bool { docResults.isEmpty && sampleResults.isEmpty }
-        public var count: Int { docResults.count + sampleResults.count }
-        public var isSampleSource: Bool { !sampleResults.isEmpty }
+        public var isEmpty: Bool {
+            docResults.isEmpty && sampleResults.isEmpty
+        }
+
+        public var count: Int {
+            docResults.count + sampleResults.count
+        }
+
+        public var isSampleSource: Bool {
+            !sampleResults.isEmpty
+        }
 
         /// Create from doc results if not empty, nil otherwise
         public static func fromDocs(
@@ -329,10 +337,18 @@ public struct UnifiedSearchInput: Sendable {
         public let shownCount: Int
         public let hasMore: Bool // True if count == limit (likely more available)
 
-        // Convenience accessors
-        public var displayName: String { info.name }
-        public var sourcePrefix: String { info.key }
-        public var emoji: String { info.emoji }
+        /// Convenience accessors
+        public var displayName: String {
+            info.name
+        }
+
+        public var sourcePrefix: String {
+            info.key
+        }
+
+        public var emoji: String {
+            info.emoji
+        }
     }
 
     /// Returns teaser info for all sources that hit the limit (nil if none)
