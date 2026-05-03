@@ -262,6 +262,10 @@ extension SampleIndex {
 
             // Index all files (with AST extraction for Swift files)
             let extractor = ASTIndexer.SwiftSourceExtractor()
+            // #228 phase 1: collect per-file `@available(...)` attribute
+            // occurrences while we're already walking the swift sources.
+            // Same shape as #219's per-package `availability.json`.
+            var fileAvailability: [SampleAvailabilitySidecar.FileEntry] = []
             for file in files {
                 try await database.indexFile(file)
 
@@ -276,10 +280,76 @@ extension SampleIndex {
                             try await database.indexImports(fileId: fileId, imports: result.imports)
                         }
                     }
+
+                    // Capture @available occurrences for the sidecar (#228).
+                    let attrs = ASTIndexer.AvailabilityParsers
+                        .extractAvailability(from: file.content)
+                    if !attrs.isEmpty {
+                        fileAvailability.append(
+                            SampleAvailabilitySidecar.FileEntry(
+                                relpath: file.path,
+                                attributes: attrs
+                            )
+                        )
+                    }
                 }
             }
 
+            // Parse Package.swift platforms (when present) and write the
+            // sidecar next to the zip — temp tree is gone after this
+            // function returns, so writing inside it would be useless.
+            // Sample-code dir is the persistent home.
+            let deploymentTargets = readPackageSwiftPlatforms(in: projectRoot)
+            try writeAvailabilitySidecar(
+                nextTo: zipURL,
+                projectId: projectId,
+                deploymentTargets: deploymentTargets,
+                fileAvailability: fileAvailability
+            )
+
             return files.count
+        }
+
+        // MARK: - Availability sidecar (#228 phase 1)
+
+        private func readPackageSwiftPlatforms(in projectRoot: URL) -> [String: String] {
+            let url = projectRoot.appendingPathComponent("Package.swift")
+            guard let manifest = try? String(contentsOf: url, encoding: .utf8) else {
+                return [:]
+            }
+            return ASTIndexer.AvailabilityParsers.parsePlatforms(from: manifest)
+        }
+
+        /// Write `<projectId>.availability.json` next to the zip in
+        /// `~/.cupertino/sample-code/`. Idempotent; identical content
+        /// re-writes the same bytes (sorted keys, ISO-8601 dates).
+        private func writeAvailabilitySidecar(
+            nextTo zipURL: URL,
+            projectId: String,
+            deploymentTargets: [String: String],
+            fileAvailability: [SampleAvailabilitySidecar.FileEntry]
+        ) throws {
+            let sortedFiles = fileAvailability.sorted { $0.relpath < $1.relpath }
+            let totalAttrs = sortedFiles.reduce(0) { $0 + $1.attributes.count }
+            let sidecar = SampleAvailabilitySidecar(
+                version: "1.0",
+                annotatedAt: Date(),
+                projectId: projectId,
+                deploymentTargets: deploymentTargets,
+                fileAvailability: sortedFiles,
+                stats: .init(
+                    filesWithAvailability: sortedFiles.count,
+                    totalAttributes: totalAttrs
+                )
+            )
+
+            let outputURL = zipURL.deletingLastPathComponent()
+                .appendingPathComponent("\(projectId).availability.json")
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(sidecar)
+            try data.write(to: outputURL, options: [.atomic])
         }
 
         // MARK: - Extract Project
