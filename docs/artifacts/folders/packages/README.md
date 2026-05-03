@@ -1,6 +1,6 @@
-# packages/ - Swift Package Metadata
+# packages/ - Swift Package Documentation
 
-Swift package metadata from Swift Package Index and GitHub.
+Swift package metadata from the Swift Package Index + GitHub, plus extracted source archives for the priority-package set. Both produced by `cupertino fetch --type packages` after the [#217](https://github.com/mihaelamj/cupertino/issues/217) merge.
 
 ## Location
 
@@ -9,15 +9,28 @@ Swift package metadata from Swift Package Index and GitHub.
 ## Created By
 
 ```bash
-cupertino fetch --type packages
+cupertino fetch --type packages                     # both stages
+cupertino fetch --type packages --skip-archives     # stage 1 only (metadata)
+cupertino fetch --type packages --skip-metadata     # stage 2 only (archives)
 ```
 
 ## Structure
 
 ```
 ~/.cupertino/packages/
-├── checkpoint.json                    # Progress tracking (resume capability)
-└── swift-packages-with-stars.json    # PRIMARY OUTPUT (all packages, clean)
+├── checkpoint.json                       # Stage 1 progress tracking (resume capability)
+├── swift-packages-with-stars.json        # Stage 1 PRIMARY OUTPUT (all packages, clean)
+├── <owner>/<repo>/...                    # Stage 2 extracted source per priority package
+│   ├── README.md, CHANGELOG.md, LICENSE
+│   ├── Package.swift
+│   ├── Sources/, Tests/
+│   ├── *.docc/ articles + tutorials
+│   ├── Examples/, Demo/
+│   └── manifest.json                     # Per-package fetch manifest (owner, ref, fetched-at, …)
+└── ...
+
+# resolved-packages.json (stage 2 dependency closure cache) lives in the
+# parent ~/.cupertino/ directory, not in packages/.
 ```
 
 ## Contents
@@ -158,16 +171,16 @@ cupertino fetch --type packages
   - Swift ecosystem essentials
   - Packages mentioned in Swift.org docs
 
-### 3. README Crawling (Future - Slow Process)
-- Fetch README.md from GitHub for each curated package
-- Slow process due to GitHub API rate limits
-- Only crawl selected packages, not all 9,699
+### 3. Source Archive Download (Stage 2 of `--type packages`)
+- `PackageArchiveExtractor` pulls `https://codeload.github.com/<owner>/<repo>/tar.gz/<ref>` (HEAD → main → master fallback) for every package in the resolved closure of `PriorityPackagesCatalog`.
+- Filtered extraction: README/CHANGELOG/LICENSE, `Package.swift`, full `Sources/` + `Tests/`, every `.docc` article and tutorial, `Examples/` / `Demo/` directories.
+- Per-package `manifest.json` records owner, repo, branch, dependency parents, file count, byte totals.
+- Slower than stage 1 (rate-limited tarball downloads), but still typically minutes for the priority closure.
 
 ### 4. Embed in Resources
 - Transform curated data to catalog format
-- Include README content
 - Save as `Packages/Sources/Resources/Resources/swift-packages-catalog.json`
-- Rebuild app with updated resource
+- Rebuild app with updated resource (regenerates `SwiftPackagesCatalogEmbedded.swift`)
 
 ## Notes
 

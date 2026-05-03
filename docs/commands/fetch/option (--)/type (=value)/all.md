@@ -19,7 +19,7 @@ Runs these fetch types **in parallel**:
 1. **docs** - Apple Developer Documentation
 2. **swift** - Swift.org Documentation
 3. **evolution** - Swift Evolution Proposals
-4. **packages** - Swift Package Metadata
+4. **packages** - Swift Package Index metadata + GitHub source archives ([#217](https://github.com/mihaelamj/cupertino/issues/217))
 5. **code** - Apple Sample Code (requires Safari sign-in to `developer.apple.com` for cookie reuse)
 
 ## Default Settings

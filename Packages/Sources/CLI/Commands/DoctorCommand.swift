@@ -336,7 +336,7 @@ struct DoctorCommand: AsyncParsableCommand {
                     }
                     if !missing.isEmpty {
                         Log.output("   ⚠  Missing READMEs: \(missing.count) (selected but not yet downloaded)")
-                        Log.output("     → Run: cupertino fetch --type package-docs")
+                        Log.output("     → Run: cupertino fetch --type packages")
                     }
                 }
             }

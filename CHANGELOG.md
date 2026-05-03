@@ -2,6 +2,10 @@
 
 _Post-1.0 fixes accumulating on the `develop` branch, off `packages-overhaul`. Will roll into a future patch release after 1.0.0 ships. Out of scope for the 1.0.0 cut so the release theme stays clean._
 
+### Changed
+
+- **Merged `fetch --type packages` and `fetch --type package-docs`** ([#217](https://github.com/mihaelamj/cupertino/issues/217)): a single `--type packages` now runs the Swift Package Index metadata refresh and the priority-package GitHub archive download back-to-back. New `--skip-metadata` / `--skip-archives` flags gate either stage individually; passing both is an error. The two were already adjacent in every workflow, shared the `~/.cupertino/packages/` output dir, and the `package-docs` name was misleading (it pulled whole archives, not READMEs). The `package-docs` raw value is gone — invocations using it now error with the help text. `directFetchTypes` count dropped 7→6, `allTypes` 10→9. `--type all` still covers both stages because the merged command is what runs.
+
 ### Added
 
 - **Binary-co-located config file** ([#211](https://github.com/mihaelamj/cupertino/issues/211)): new `Shared.BinaryConfig` reads an optional `cupertino.config.json` from the directory of the running executable (symlinks resolved). One key supported today: `baseDirectory` (tilde-expanded). When present, every default path in `Shared.Constants.default*` plus `SampleIndex.defaultDatabasePath` and `SampleIndex.defaultSampleCodeDirectory` redirects under that base, so `fetch`, `save`, `serve`, `ask`, `doctor`, and the samples DB all follow uniformly without env vars or per-command flags. Missing file or any decode error falls through to the existing `~/.cupertino/` default, so installs without the file behave identically to before. Use case: run a dev build alongside an installed brew binary against separate corpora. Contract test (`BasePathDerivationTests`, `SampleIndexBasePathDerivationTests`) asserts every default path derives from `defaultBaseDirectory`, so a future getter that bypasses it fails at test time.

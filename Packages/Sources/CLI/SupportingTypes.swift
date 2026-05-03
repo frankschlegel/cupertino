@@ -10,7 +10,6 @@ extension Cupertino {
         case swift
         case evolution
         case packages
-        case packageDocs = "package-docs"
         case code
         case samples
         case archive
@@ -23,8 +22,7 @@ extension Cupertino {
             case .docs: return Shared.Constants.DisplayName.appleDocs
             case .swift: return Shared.Constants.DisplayName.swiftOrgDocs
             case .evolution: return Shared.Constants.DisplayName.swiftEvolution
-            case .packages: return Shared.Constants.DisplayName.packageMetadata
-            case .packageDocs: return Shared.Constants.DisplayName.swiftPackages
+            case .packages: return Shared.Constants.DisplayName.swiftPackages
             case .code: return Shared.Constants.DisplayName.sampleCode
             case .samples: return "Sample Code (GitHub)"
             case .archive: return Shared.Constants.DisplayName.archive
@@ -39,8 +37,7 @@ extension Cupertino {
             case .docs: return Shared.Constants.BaseURL.appleDeveloperDocs
             case .swift: return Shared.Constants.BaseURL.swiftOrg
             case .evolution: return "" // N/A - uses different fetcher
-            case .packages: return "" // API-based fetching
-            case .packageDocs: return "" // GitHub raw content downloading
+            case .packages: return "" // API-based fetching + GitHub archive download
             case .code: return "" // Web-based download from Apple
             case .samples: return "" // Git clone from GitHub
             case .archive: return Shared.Constants.BaseURL.appleArchive
@@ -78,7 +75,7 @@ extension Cupertino {
                 return Shared.Constants.defaultSwiftOrgDirectory.path
             case .evolution:
                 return Shared.Constants.defaultSwiftEvolutionDirectory.path
-            case .packages, .packageDocs:
+            case .packages:
                 return Shared.Constants.defaultPackagesDirectory.path
             case .code, .samples:
                 return Shared.Constants.defaultSampleCodeDirectory.path
@@ -96,7 +93,7 @@ extension Cupertino {
         }
 
         static var directFetchTypes: [FetchType] {
-            [.packages, .packageDocs, .code, .samples, .archive, .hig, .availability]
+            [.packages, .code, .samples, .archive, .hig, .availability]
         }
 
         static var allTypes: [FetchType] {

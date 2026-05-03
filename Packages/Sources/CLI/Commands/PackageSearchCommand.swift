@@ -37,7 +37,7 @@ struct PackageSearchCommand: AsyncParsableCommand {
 
         guard FileManager.default.fileExists(atPath: dbURL.path) else {
             Logging.ConsoleLogger.error("❌ packages.db not found at \(dbURL.path)")
-            Logging.ConsoleLogger.error("   Run `cupertino fetch --type package-docs` then `cupertino save --packages` first.")
+            Logging.ConsoleLogger.error("   Run `cupertino fetch --type packages` then `cupertino save --packages` first.")
             throw ExitCode.failure
         }
 
@@ -61,22 +61,22 @@ struct PackageSearchCommand: AsyncParsableCommand {
             return
         }
 
-        for (i, fused) in result.candidates.enumerated() {
-            let c = fused.candidate
-            let owner = c.metadata["owner"] ?? ""
-            let repo = c.metadata["repo"] ?? ""
-            let relpath = c.metadata["relpath"] ?? c.identifier
-            let module = c.metadata["module"] ?? ""
+        for (idx, fused) in result.candidates.enumerated() {
+            let cand = fused.candidate
+            let owner = cand.metadata["owner"] ?? ""
+            let repo = cand.metadata["repo"] ?? ""
+            let relpath = cand.metadata["relpath"] ?? cand.identifier
+            let module = cand.metadata["module"] ?? ""
             print("══════════════════════════════════════════════════════════════════════")
-            print("[\(i + 1)] \(owner)/\(repo) — \(relpath)")
-            let kindLabel = c.kind ?? "?"
+            print("[\(idx + 1)] \(owner)/\(repo) — \(relpath)")
+            let kindLabel = cand.kind ?? "?"
             if !module.isEmpty {
                 print("    module: \(module)  •  kind: \(kindLabel)  •  score: \(String(format: "%.4f", fused.score))")
             } else {
                 print("    kind: \(kindLabel)  •  score: \(String(format: "%.4f", fused.score))")
             }
             print("──────────────────────────────────────────────────────────────────────")
-            print(c.chunk)
+            print(cand.chunk)
             print("")
         }
     }

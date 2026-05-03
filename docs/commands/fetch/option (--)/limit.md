@@ -35,7 +35,7 @@ cupertino fetch --type packages --limit 100 --output-dir ./test-packages
 
 ## Behavior
 
-- For `packages`: Stops after fetching N package metadata entries
+- For `packages` (stage 1, metadata refresh): stops after fetching N package metadata entries. Has no effect on stage 2 (archive download) — the archive set is driven by `PriorityPackagesCatalog`, not the metadata limit.
 - For `code`: Stops after downloading N ZIP files
 
 ## Notes
@@ -43,3 +43,4 @@ cupertino fetch --type packages --limit 100 --output-dir ./test-packages
 - Fetches items in order they appear in source
 - Re-running with a larger `--limit` continues from the saved checkpoint (resume is automatic)
 - Pass `--start-clean` to discard the checkpoint and start over
+- For packages, combine with `--skip-archives` if you only want a limited metadata sample

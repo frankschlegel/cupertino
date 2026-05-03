@@ -92,8 +92,7 @@ cupertino save --remote              # Stream and build locally
 cupertino fetch --type docs          # Apple Developer Documentation
 cupertino fetch --type swift         # Swift.org documentation
 cupertino fetch --type evolution     # Swift Evolution proposals
-cupertino fetch --type packages      # Swift package metadata
-cupertino fetch --type package-docs  # Swift package READMEs
+cupertino fetch --type packages      # Swift package metadata + GitHub archives
 cupertino fetch --type code          # Sample code from Apple (requires auth)
 cupertino fetch --type samples       # Sample code from GitHub (recommended)
 cupertino fetch --type archive       # Apple Archive programming guides

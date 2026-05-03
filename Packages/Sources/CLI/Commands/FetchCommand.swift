@@ -31,7 +31,8 @@ struct FetchCommand: AsyncParsableCommand {
         name: .long,
         help: """
         Type of documentation to fetch: docs (Apple), swift (Swift.org), \
-        evolution (Swift Evolution), packages (Swift package metadata), \
+        evolution (Swift Evolution), \
+        packages (Swift package metadata + archives — see --skip-metadata / --skip-archives), \
         code (Sample code from Apple), \
         samples (Sample code from GitHub - recommended), \
         archive (Apple Archive guides), hig (Human Interface Guidelines), \
@@ -139,6 +140,24 @@ struct FetchCommand: AsyncParsableCommand {
     )
     var refresh: Bool = false
 
+    @Flag(
+        name: .long,
+        help: """
+        Skip the Swift Package Index metadata refresh stage of \
+        `--type packages` (run only the archive download). #217
+        """
+    )
+    var skipMetadata: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Skip the GitHub archive download stage of `--type packages` \
+        (run only the metadata refresh). #217
+        """
+    )
+    var skipArchives: Bool = false
+
     mutating func run() async throws {
         logStartMessage()
 
@@ -147,14 +166,9 @@ struct FetchCommand: AsyncParsableCommand {
             return
         }
 
-        // Direct fetch types (packages, package-docs, code)
+        // Direct fetch types (packages, code)
         if type == .packages {
             try await runPackageFetch()
-            return
-        }
-
-        if type == .packageDocs {
-            try await runPackageDocsFetch()
             return
         }
 
@@ -703,11 +717,25 @@ struct FetchCommand: AsyncParsableCommand {
         }
     }
 
+    /// `--type packages` — runs metadata refresh then archive download in
+    /// sequence. Either stage can be skipped via `--skip-metadata` /
+    /// `--skip-archives`. The two were separate fetch types until #217;
+    /// merged because they always ran back-to-back, shared the output dir,
+    /// and the `package-docs` name was misleading (it fetches whole archives,
+    /// not READMEs). Stage 2 reads `PriorityPackagesCatalog`, not the
+    /// metadata catalog, so the stages are independent.
     private func runPackageFetch() async throws {
         let defaultPath = Shared.Constants.defaultPackagesDirectory.path
         let outputURL = URL(fileURLWithPath: outputDir ?? defaultPath).expandingTildeInPath
 
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+
+        if skipMetadata, skipArchives {
+            Logging.ConsoleLogger.error(
+                "❌ Both --skip-metadata and --skip-archives passed — nothing to do."
+            )
+            throw ExitCode.failure
+        }
 
         if ProcessInfo.processInfo.environment[Shared.Constants.EnvVar.githubToken] == nil {
             Logging.ConsoleLogger.info(Shared.Constants.Message.gitHubTokenTip)
@@ -715,6 +743,22 @@ struct FetchCommand: AsyncParsableCommand {
             Logging.ConsoleLogger.info("   \(Shared.Constants.Message.rateLimitWithToken)")
             Logging.ConsoleLogger.info("   \(Shared.Constants.Message.exportGitHubToken)\n")
         }
+
+        if !skipMetadata {
+            try await runPackageMetadataStage(outputURL: outputURL)
+        } else {
+            Logging.ConsoleLogger.info("⏭  --skip-metadata: skipping Swift Package Index metadata refresh")
+        }
+
+        if !skipArchives {
+            try await runPackageArchivesStage(outputURL: outputURL)
+        } else {
+            Logging.ConsoleLogger.info("⏭  --skip-archives: skipping GitHub archive download")
+        }
+    }
+
+    private func runPackageMetadataStage(outputURL: URL) async throws {
+        Logging.ConsoleLogger.info("📇 Stage 1/2 — Refreshing Swift Package Index metadata")
 
         let fetcher = Core.PackageFetcher(
             outputDirectory: outputURL,
@@ -728,21 +772,18 @@ struct FetchCommand: AsyncParsableCommand {
         }
 
         Logging.ConsoleLogger.output("")
-        Logging.ConsoleLogger.info("✅ Fetch completed!")
+        Logging.ConsoleLogger.info("✅ Metadata refresh completed")
         Logging.ConsoleLogger.info("   Total packages: \(stats.totalPackages)")
         Logging.ConsoleLogger.info("   Successful: \(stats.successfulFetches)")
         Logging.ConsoleLogger.info("   Errors: \(stats.errors)")
         if let duration = stats.duration {
             Logging.ConsoleLogger.info("   Duration: \(Int(duration))s")
         }
-        Logging.ConsoleLogger.info("\n📁 Output: \(outputURL.path)/\(Shared.Constants.FileName.packagesWithStars)")
+        Logging.ConsoleLogger.info("   📁 \(outputURL.path)/\(Shared.Constants.FileName.packagesWithStars)\n")
     }
 
-    private func runPackageDocsFetch() async throws {
-        let defaultPath = Shared.Constants.defaultPackagesDirectory.path
-        let outputURL = URL(fileURLWithPath: outputDir ?? defaultPath).expandingTildeInPath
-
-        try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+    private func runPackageArchivesStage(outputURL: URL) async throws {
+        Logging.ConsoleLogger.info("📦 Stage 2/2 — Downloading priority package archives")
 
         // Load priority packages
         let priorityPackages = await PriorityPackagesCatalog.allPackages
@@ -917,7 +958,7 @@ struct FetchCommand: AsyncParsableCommand {
         stats.endTime = Date()
 
         Logging.ConsoleLogger.output("")
-        Logging.ConsoleLogger.info("✅ Fetch completed!")
+        Logging.ConsoleLogger.info("✅ Archive download completed")
         Logging.ConsoleLogger.info("   New packages: \(stats.newPackages)")
         Logging.ConsoleLogger.info("   Files saved: \(stats.totalFilesSaved)")
         Logging.ConsoleLogger.info("   Bytes saved: \(stats.totalBytesSaved / 1024) KB")
@@ -925,8 +966,8 @@ struct FetchCommand: AsyncParsableCommand {
         if let duration = stats.duration {
             Logging.ConsoleLogger.info("   Duration: \(Int(duration))s")
         }
-        Logging.ConsoleLogger.info("\n📁 Packages: \(outputURL.path)")
-        Logging.ConsoleLogger.info("   Next: index them into \(Shared.Constants.defaultPackagesDatabase.path) via `save --type packages`")
+        Logging.ConsoleLogger.info("   📁 \(outputURL.path)")
+        Logging.ConsoleLogger.info("   Next: index them into \(Shared.Constants.defaultPackagesDatabase.path) via `save --packages`")
     }
 
     private func writePackageManifest(

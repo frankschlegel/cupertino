@@ -23,7 +23,7 @@ For web crawls (`docs`, `swift`, `evolution`, `archive`, `hig`):
 3. Atomically writes `metadata.json` back.
 4. Crawler boots with no resumable session → starts fresh from the seed URL.
 
-For direct fetches (`packages`, `package-docs`, `code`):
+For direct fetches (`packages`, `code`):
 
 1. Disables resume mode in `PackageFetcher` (equivalent to `resume: false`).
 2. Re-walks the catalog from the start.

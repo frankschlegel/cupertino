@@ -24,8 +24,7 @@ The `fetch` command is the unified fetching command that handles both web crawli
   - `docs` - Apple Developer Documentation (web crawl)
   - `swift` - Swift.org Documentation (web crawl)
   - `evolution` - Swift Evolution Proposals (web crawl)
-  - `packages` - Swift Package Index metadata (direct download)
-  - `package-docs` - Swift Package READMEs (direct download)
+  - `packages` - Swift Package Index metadata + GitHub source archives ([#217](https://github.com/mihaelamj/cupertino/issues/217) — see `--skip-metadata` / `--skip-archives`)
   - `code` - Apple Sample Code (direct download from Apple, requires auth)
   - `samples` - Apple Sample Code (git clone from GitHub, recommended)
   - `archive` - Apple Archive guides (legacy programming guides)
@@ -53,6 +52,8 @@ The `fetch` command is the unified fetching command that handles both web crawli
 
 - [--output-dir](output-dir.md) - Output directory for downloaded resources
 - [--limit](limit.md) - Maximum number of items to fetch (packages/code types only)
+- `--skip-metadata` - Skip the metadata-refresh stage of `--type packages` ([#217](https://github.com/mihaelamj/cupertino/issues/217))
+- `--skip-archives` - Skip the archive-download stage of `--type packages` ([#217](https://github.com/mihaelamj/cupertino/issues/217))
 - `--fast` - Use higher concurrency and shorter timeouts for `--type availability` (faster but more aggressive)
 
 ## Examples

@@ -6,7 +6,7 @@ import Shared
 
 /// Narrow helper for fetching individual README files and detecting known hosted
 /// documentation sites. Kept for backward compatibility with existing integration
-/// tests; the main `cupertino fetch --type package-docs` pipeline now goes through
+/// tests; the main `cupertino fetch --type packages` pipeline now goes through
 /// `PackageArchiveExtractor` + `Search.PackageIndex` directly and does not call
 /// any method on this type.
 extension Core {
@@ -41,8 +41,7 @@ extension Core {
                         let (data, response) = try await URLSession.shared.data(from: url)
                         guard let httpResponse = response as? HTTPURLResponse else { continue }
                         if httpResponse.statusCode == 200,
-                           let content = String(data: data, encoding: .utf8)
-                        {
+                           let content = String(data: data, encoding: .utf8) {
                             return content
                         }
                     } catch {
@@ -78,8 +77,7 @@ extension Core {
             for site in knownSites {
                 if owner.lowercased() == site.owner.lowercased(),
                    repo.lowercased() == site.repo.lowercased(),
-                   let url = URL(string: site.url)
-                {
+                   let url = URL(string: site.url) {
                     return DocumentationSite(type: site.type, baseURL: url)
                 }
             }
