@@ -20,6 +20,7 @@ The `save` command builds a Full-Text Search (FTS5) SQLite database from previou
 - [--evolution-dir](option%20%28--%29/evolution-dir.md) - Directory containing Swift Evolution proposals
 - [--swift-org-dir](option%20%28--%29/swift-org-dir.md) - Directory containing Swift.org documentation
 - [--packages-dir](option%20%28--%29/packages-dir.md) - Directory containing package READMEs
+- `--archive-dir` - Directory containing Apple Archive documentation (legacy programming guides like Core Animation, Quartz 2D, KVO/KVC)
 - [--metadata-file](option%20%28--%29/metadata-file.md) - Path to metadata.json file
 - [--search-db](option%20%28--%29/search-db.md) - Output path for search database
 - [--clear](option%20%28--%29/clear.md) - Clear existing index before building
