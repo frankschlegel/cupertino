@@ -6,9 +6,9 @@ import Logging
 import Search
 import Shared
 
-// Lets ArgumentParser parse `--discovery-mode <mode>` directly into the
-// shared enum. The conformance lives here (not in Shared) so the Shared
-// module doesn't take on an ArgumentParser dependency.
+/// Lets ArgumentParser parse `--discovery-mode <mode>` directly into the
+/// shared enum. The conformance lives here (not in Shared) so the Shared
+/// module doesn't take on an ArgumentParser dependency.
 extension Shared.DiscoveryMode: ExpressibleByArgument {}
 
 // MARK: - Fetch Command
@@ -95,10 +95,12 @@ struct FetchCommand: AsyncParsableCommand {
         name: .long,
         help: """
         Path to a text file containing one URL per line. Each URL is \
-        enqueued at maxDepth (so children aren't re-discovered). Useful \
-        for fetching a fixed list — e.g. URLs another corpus has but this \
-        one is missing — without re-spidering. Lines starting with '#' \
-        and blank lines are ignored. (#210)
+        enqueued at depth 0; the crawler follows links from each up to \
+        --max-depth, so set --max-depth 0 to fetch only the listed URLs \
+        with no descent, --max-depth 3 to follow 3 levels of children, etc. \
+        Useful for fetching a fixed list — e.g. URLs another corpus has \
+        but this one is missing — without re-spidering everything. Lines \
+        starting with '#' and blank lines are ignored. (#210)
         """
     )
     var urls: String?
@@ -429,11 +431,16 @@ struct FetchCommand: AsyncParsableCommand {
     }
 
     /// Enqueue every URL listed in `urlsFile` (one URL per line) at
-    /// `maxDepth` so children aren't re-discovered. Lines starting with
-    /// `#` and blank lines are ignored. Initialises `crawlState` if
-    /// missing so the helper works against a fresh corpus too. (#210)
+    /// depth 0. The crawler then follows each URL's outgoing links up
+    /// to `maxDepth`, so the caller can use `--max-depth` to control
+    /// how deep the descent tree goes (`--max-depth 0` = no descent,
+    /// just fetch the listed URLs themselves). Lines starting with `#`
+    /// and blank lines are ignored. Initialises `crawlState` if missing
+    /// so the helper works against a fresh corpus too. (#210)
     ///
     /// `internal static` so tests can exercise it directly.
+    /// `maxDepth` parameter is retained for symmetry with sibling helpers
+    /// even though the URLs are always enqueued at depth 0.
     static func enqueueURLsFromFile(
         at outputDirectory: URL,
         urlsFile: URL,
@@ -483,16 +490,18 @@ struct FetchCommand: AsyncParsableCommand {
             outputDirectory: outputDirectory.path
         )
 
-        // Append at maxDepth so children aren't re-queued — same approach
-        // as --retry-errors and --baseline.
-        let newItems = validURLs.map { QueuedURL(url: $0, depth: maxDepth) }
+        // Enqueue at depth 0 so the crawler follows children up to
+        // `configuration.maxDepth`. This is the deliberate semantic
+        // difference from --retry-errors and --baseline, which queue
+        // at maxDepth precisely to suppress descent.
+        let newItems = validURLs.map { QueuedURL(url: $0, depth: 0) }
         crawlState.queue = newItems + crawlState.queue
         crawlState.lastSaveTime = Date()
         metadata.crawlState = crawlState
         try metadata.save(to: metadataFile)
 
         Logging.ConsoleLogger.info(
-            "📥 --urls: enqueued \(validURLs.count) URL(s) from \(urlsFile.lastPathComponent) at depth \(maxDepth)"
+            "📥 --urls: enqueued \(validURLs.count) URL(s) from \(urlsFile.lastPathComponent) at depth 0 (descent up to maxDepth=\(maxDepth))"
         )
     }
 

@@ -959,7 +959,7 @@ struct ResumeAndStartCleanTests {
         return file
     }
 
-    @Test("--urls enqueues every URL at maxDepth into a fresh corpus")
+    @Test("--urls enqueues every URL at depth 0 into a fresh corpus (so descent follows up to maxDepth)")
     func urlsEnqueuesIntoFreshCorpus() async throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -981,7 +981,7 @@ struct ResumeAndStartCleanTests {
         #expect(metadata.crawlState != nil)
         let queue = metadata.crawlState?.queue ?? []
         #expect(queue.count == 3)
-        #expect(queue.allSatisfy { $0.depth == 15 })
+        #expect(queue.allSatisfy { $0.depth == 0 })
         let queuedURLs = Set(queue.map(\.url))
         #expect(queuedURLs.contains("https://developer.apple.com/documentation/swiftui"))
         #expect(queuedURLs.contains("https://developer.apple.com/documentation/visionos"))
@@ -1046,14 +1046,16 @@ struct ResumeAndStartCleanTests {
         let metadata = try CrawlMetadata.load(from: metaFile)
         let queue = metadata.crawlState?.queue ?? []
         #expect(queue.count == 4)
-        // New URLs at the front
+        // New URLs at the front, queued at depth 0 so descent follows
         #expect(queue[0].url.contains("new-a"))
-        #expect(queue[0].depth == 15)
+        #expect(queue[0].depth == 0)
         #expect(queue[1].url.contains("new-b"))
-        // Existing URLs preserved at the tail with original depths
+        #expect(queue[1].depth == 0)
+        // Existing URLs preserved at the tail with their original depths
         #expect(queue[2].url.contains("existing-1"))
         #expect(queue[2].depth == 0)
         #expect(queue[3].url.contains("existing-2"))
+        #expect(queue[3].depth == 1)
     }
 
     @Test("--urls throws on a malformed line")
