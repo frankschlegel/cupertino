@@ -95,9 +95,14 @@ extension Shared {
 
         // MARK: - Default Paths
 
-        /// Default base directory path: ~/.cupertino
+        /// Default base directory path: ~/.cupertino, unless overridden by a
+        /// `cupertino.config.json` sitting next to the running executable
+        /// (see `Shared.BinaryConfig`, #211).
         public static var defaultBaseDirectory: URL {
-            FileManager.default.homeDirectoryForCurrentUser
+            if let override = Shared.BinaryConfig.shared.resolvedBaseDirectory {
+                return override
+            }
+            return FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(baseDirectoryName)
         }
 

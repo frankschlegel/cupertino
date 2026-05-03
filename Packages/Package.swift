@@ -142,7 +142,7 @@ let targets: [Target] = {
     )
     let sampleIndexTestsTarget = Target.testTarget(
         name: "SampleIndexTests",
-        dependencies: ["SampleIndex", "TestSupport"]
+        dependencies: ["SampleIndex", "Shared", "TestSupport"]
     )
 
     let servicesTarget = Target.target(
