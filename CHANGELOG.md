@@ -66,7 +66,7 @@ _Post-1.0 fixes accumulating on the `develop` branch, off `packages-overhaul`. W
 
 ## 1.0.0 "First Light" — unreleased
 
-_The first release we'd call properly stable. Consolidates what was originally scoped as v0.11.0 (packages-overhaul) + v0.12.0 (docs-overhaul) into a single cut. Release plan: [#192](https://github.com/mihaelamj/cupertino/issues/192). Canonical roadmap: [#183](https://github.com/mihaelamj/cupertino/issues/183). **Code-side complete on `packages-overhaul` (final hardening: crawl resume model + cross-machine portability landed 2026-04-25); awaiting full re-crawl + companion-repo artifact publishing (#192 section I) before tag.**_
+_The first release we'd call properly stable. Consolidates what was originally scoped as v0.11.0 (packages-overhaul) + v0.12.0 (docs-overhaul) into a single cut. Release plan: [#192](https://github.com/mihaelamj/cupertino/issues/192). Canonical roadmap: [#183](https://github.com/mihaelamj/cupertino/issues/183). **Code-side complete on `packages-overhaul` (final hardening: crawl resume model + cross-machine portability landed 2026-04-25); awaiting companion-repo artifact publishing (#192 section I) before tag. The April 2026 corpus is sufficient for v1.0.0 — `cupertino save` rebuilds search.db at schema 12 from the existing `~/.cupertino/docs/` without re-crawling. The in-flight WKWebView re-crawl on the Mac mini is scoped for v1.0.1, not v1.0.0.**_
 
 ### Added
 
