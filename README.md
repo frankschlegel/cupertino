@@ -19,7 +19,7 @@ A Swift-based tool to crawl, index, and serve Apple's developer documentation to
 Cupertino is a local, structured, AI-ready documentation system for Apple platforms. It:
 
 - **Crawls** Apple Developer documentation, Swift.org, Swift Evolution proposals, Human Interface Guidelines, Apple Archive legacy guides, and Swift package metadata
-- **Indexes** everything into a fast, searchable SQLite FTS5 database with BM25 ranking
+- **Indexes** everything into a fast, searchable SQLite FTS5 database with field-weighted BM25 (BM25F) ranking and AST-extracted symbol columns
 - **Serves** documentation to AI agents like Claude via the Model Context Protocol
 - **Provides** offline access to 302,424+ documentation pages across 307 frameworks
 
@@ -220,6 +220,22 @@ Add to `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` for global ac
 ### Use with VS Code (GitHub Copilot)
 
 Add to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "cupertino": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/cupertino",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Use with GitHub Copilot for Xcode
+
+[GitHub Copilot for Xcode](https://github.com/github/CopilotForXcode) supports MCP servers via Agent Mode. Open **Settings → MCP Configuration → Edit Config** in the app, or edit `~/.config/github-copilot/xcode/mcp.json` directly:
 
 ```json
 {
@@ -471,7 +487,9 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
 
 ### 3. Full-Text Search Engine
 
-- **Technology**: SQLite FTS5 with BM25 ranking
+- **Technology**: SQLite FTS5 with field-weighted BM25 (BM25F, Robertson/Zaragoza/Taylor 2004) over a structured 9-column index. Title 10×, AST-extracted symbols 5×, summary 3×, framework 2×.
+- **AST-aware**: a Swift source extractor pulls identifiers out of every embedded code block and the page declaration, denormalizes them into a `symbols` column, and feeds them into BM25F so a query like `Task` ranks the Swift `Task` struct above prose mentions of the word "task".
+- **smart-query**: `cupertino search` (and the underlying `Search.SmartQuery` API) fans the question across every source in parallel and fuses per-source rankings via reciprocal rank fusion (RRF, k=60, Cormack/Clarke/Büttcher 2009). One dead source never takes the whole query down.
 - **Features**:
   - Porter stemming (e.g., "running" matches "run")
   - Framework filtering
