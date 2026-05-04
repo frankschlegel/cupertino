@@ -68,6 +68,11 @@ private final class SetupRenderer: @unchecked Sendable {
         case .statusResolved(let status):
             printPriorStatus(status)
 
+        case .dbBackedUp(let filename, _, let backupURL):
+            Logging.ConsoleLogger.info(
+                "💾 Backed up \(filename) → \(backupURL.lastPathComponent)"
+            )
+
         case .downloadStart(let label):
             Logging.ConsoleLogger.info("⬇️  Downloading \(label)...")
 

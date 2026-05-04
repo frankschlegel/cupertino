@@ -56,6 +56,9 @@ extension Distribution {
         public enum Event: Sendable {
             case starting(Request)
             case statusResolved(InstalledVersion.Status)
+            /// A pre-existing DB was renamed to a `.backup-<version>-<iso8601>`
+            /// sibling before extraction would overwrite it (#249).
+            case dbBackedUp(filename: String, from: URL, to: URL)
             case downloadStart(label: String)
             case downloadProgress(label: String, ArtifactDownloader.Progress)
             case downloadComplete(label: String, sizeBytes: Int64)
@@ -111,6 +114,20 @@ extension Distribution {
                 handler(.finished(outcome))
                 return outcome
             }
+
+            // 0. Back up any pre-existing DBs before the extractor would
+            // overwrite them (#249). Each of the three DBs is backed up
+            // only when present on disk: a v0.10.x install has search.db
+            // + samples.db but no packages.db (net-new in v1.0); a
+            // v0.11+ install has all three. The user can roll back by
+            // renaming the backup sibling over the new file if v1.0
+            // misbehaves.
+            try backupExistingDBs(
+                in: request.baseDir,
+                dbURLs: [searchDBURL, samplesDBURL, packagesDBURL],
+                installedVersion: installedVersion,
+                handler: handler
+            )
 
             // 1. Docs zip — bundles search.db + samples.db.
             let docsZipFilename = "cupertino-databases-v\(request.currentDocsVersion).zip"
@@ -206,6 +223,57 @@ extension Distribution {
             )
             try? FileManager.default.removeItem(at: zipURL)
             handler(.extractComplete(label: label))
+        }
+
+        /// Rename pre-existing DBs to `.backup-<version>-<iso8601>` siblings
+        /// before extraction overwrites them (#249). Pure file moves; on
+        /// success the user has a clear rollback path.
+        ///
+        /// Each DB in `dbURLs` is backed up only when present on disk —
+        /// callers pass all three (search.db / samples.db / packages.db)
+        /// and the helper skips whichever doesn't exist. Handles both the
+        /// v0.10.x → v1.0 case (no packages.db on disk) and the v0.11+
+        /// → v1.0.x case (all three present).
+        ///
+        /// `installedVersion` comes from `InstalledVersion.read(...)`; nil
+        /// → "unknown" suffix (legacy install with no version stamp).
+        private static func backupExistingDBs(
+            in baseDir: URL,
+            dbURLs: [URL],
+            installedVersion: String?,
+            handler: @escaping @Sendable (Event) -> Void
+        ) throws {
+            let suffix = backupSuffix(for: installedVersion)
+            let fm = FileManager.default
+            for url in dbURLs {
+                guard fm.fileExists(atPath: url.path) else { continue }
+                let backupURL = url.appendingPathExtension(suffix)
+                // Move via remove-then-move so a stale identically-named
+                // backup from a previous failed run doesn't block.
+                if fm.fileExists(atPath: backupURL.path) {
+                    try fm.removeItem(at: backupURL)
+                }
+                try fm.moveItem(at: url, to: backupURL)
+                handler(.dbBackedUp(
+                    filename: url.lastPathComponent,
+                    from: url,
+                    to: backupURL
+                ))
+            }
+        }
+
+        /// `backup-<version>-<iso8601-utc>` suffix appended via
+        /// `appendingPathExtension`. Result on disk:
+        /// `search.db.backup-0.10.0-2026-05-04T05:30:12Z`.
+        static func backupSuffix(
+            for installedVersion: String?,
+            now: Date = Date()
+        ) -> String {
+            let version = installedVersion ?? "unknown"
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            let stamp = formatter.string(from: now)
+            return "backup-\(version)-\(stamp)"
         }
     }
 }
