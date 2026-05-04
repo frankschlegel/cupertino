@@ -3063,6 +3063,34 @@ extension Search {
                 results.insert(frameworkRoot, at: 0)
             }
 
+            // (#256 follow-on) Force-include canonical type pages for top-tier frameworks.
+            //
+            // Plain BM25 buries some canonical type parent pages past the
+            // 1000-row fetchLimit (Foundation `URL` lands at raw rank 1017 on
+            // the v1.0 corpus, Foundation `Data` and Swift `Identifiable`
+            // land past 2500). Once outside the candidate set, no post-rank
+            // multiplier can save them. This is a separate problem from
+            // ranking inside the set: increasing fetchLimit alone can't fix
+            // it without paying a per-query cost on every search.
+            //
+            // Hand-fetch by URI shape `apple-docs://FRAMEWORK/documentation_FRAMEWORK_QUERY`
+            // for the same top-tier frameworks already given a positive
+            // `frameworkAuthority` weight (swift, swiftui, foundation). O(1)
+            // per probe; three probes per single-token query. Only fires for
+            // single-word, ASCII-identifier-shaped queries — same rough
+            // shape that HEURISTIC 1 + 1.5 already gate on.
+            if shouldFetchFrameworkRoot {
+                let canonicals = try await fetchCanonicalTypePages(query: query)
+                if !canonicals.isEmpty {
+                    let canonicalURIs = Set(canonicals.map(\.uri))
+                    results.removeAll { canonicalURIs.contains($0.uri) }
+                    // Preserve authority order from `canonicalTypePageFrameworks`
+                    // (swift > swiftui > foundation) — `fetchCanonicalTypePages`
+                    // returns hits in that order, so prepend en bloc.
+                    results.insert(contentsOf: canonicals, at: 0)
+                }
+            }
+
             // (#81) Attach matching symbols to results that have them
             if !symbolMatchURIs.isEmpty {
                 let symbolsByURI = try await fetchMatchingSymbols(query: sanitizedQuery, uris: symbolMatchURIs)
@@ -3201,6 +3229,107 @@ extension Search {
             }
 
             return uris
+        }
+
+        /// Frameworks consulted by `fetchCanonicalTypePages` (#256 follow-on).
+        ///
+        /// Same set as the top-tier entries in `frameworkAuthority`. Kept
+        /// narrow on purpose — adding a framework here is a claim that its
+        /// `documentation_FRAMEWORK_TOKEN` page is reliably the canonical
+        /// answer when a user types `TOKEN` on its own.
+        private static let canonicalTypePageFrameworks: [String] = [
+            "swift", "swiftui", "foundation",
+        ]
+
+        /// Hand-fetch canonical type pages whose URI shape is
+        /// `apple-docs://FRAMEWORK/documentation_FRAMEWORK_QUERY` for top-tier
+        /// frameworks (#256 follow-on). See call site for rationale.
+        ///
+        /// Probes one URI per top-tier framework; non-existing rows return
+        /// nothing. Returned results carry a guaranteed-top rank so the
+        /// caller can dedup-and-prepend them without re-running the post-rank
+        /// math. Caller is responsible for not invoking this when the
+        /// effective source filter is something other than apple-docs.
+        private func fetchCanonicalTypePages(query: String) async throws -> [Search.Result] {
+            guard let database else { return [] }
+
+            // Same shape constraints as `Search.SmartQuery.isLikelySymbolQuery`:
+            // single token, length >= 2, ASCII identifier characters only.
+            // Multi-word queries don't have an obvious top-level apple-docs
+            // URI to probe and aren't the failure mode this addresses.
+            let trimmed = query.trimmingCharacters(in: .whitespaces)
+            guard trimmed.count >= 2,
+                  !trimmed.contains(" "),
+                  !trimmed.contains("."),
+                  trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") })
+            else {
+                return []
+            }
+            let queryLower = trimmed.lowercased()
+
+            let sql = """
+            SELECT
+                f.uri, f.source, f.framework, f.title, f.summary, m.file_path, m.word_count,
+                m.min_ios, m.min_macos, m.min_tvos, m.min_watchos, m.min_visionos
+            FROM docs_fts f
+            JOIN docs_metadata m ON f.uri = m.uri
+            WHERE f.uri = ?
+            LIMIT 1;
+            """
+
+            var hits: [Search.Result] = []
+            for framework in Self.canonicalTypePageFrameworks {
+                let candidateURI = "apple-docs://\(framework)/documentation_\(framework)_\(queryLower)"
+
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                    continue
+                }
+                sqlite3_bind_text(statement, 1, (candidateURI as NSString).utf8String, -1, nil)
+
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    let uri = sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? ""
+                    let source = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+                    let frameworkName = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? ""
+                    let title = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? ""
+                    let summary = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
+                    let filePath = sqlite3_column_text(statement, 5).map { String(cString: $0) } ?? ""
+                    let wordCount = Int(sqlite3_column_int(statement, 6))
+
+                    var availabilityArray: [SearchPlatformAvailability] = []
+                    if let ios = sqlite3_column_text(statement, 7).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "iOS", introducedAt: ios))
+                    }
+                    if let macos = sqlite3_column_text(statement, 8).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "macOS", introducedAt: macos))
+                    }
+                    if let tvos = sqlite3_column_text(statement, 9).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "tvOS", introducedAt: tvos))
+                    }
+                    if let watchos = sqlite3_column_text(statement, 10).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "watchOS", introducedAt: watchos))
+                    }
+                    if let visionos = sqlite3_column_text(statement, 11).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "visionOS", introducedAt: visionos))
+                    }
+
+                    hits.append(Search.Result(
+                        uri: uri,
+                        source: source,
+                        framework: frameworkName.isEmpty ? framework : frameworkName,
+                        title: title,
+                        summary: summary,
+                        filePath: filePath,
+                        wordCount: wordCount,
+                        rank: -2000.0, // Guaranteed top, ahead of even framework-root rank (-1000)
+                        availability: availabilityArray.isEmpty ? nil : availabilityArray
+                    ))
+                }
+
+                sqlite3_finalize(statement)
+            }
+
+            return hits
         }
 
         /// Fetch framework root page by exact query match (#81)
