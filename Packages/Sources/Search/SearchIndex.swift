@@ -3267,13 +3267,22 @@ extension Search {
             }
             let queryLower = trimmed.lowercased()
 
+            // Query docs_metadata only — its `uri` is a TEXT PRIMARY KEY so the
+            // lookup is O(log n) on the implicit unique index. Joining
+            // `docs_fts` would force a virtual-table SCAN (FTS5 has no
+            // queryable index on `uri`), which costs ~3 s per probe on the
+            // v1.0 corpus. Title and summary come from `json_data` via
+            // `json_extract`; `abstract` is the structured-page summary in
+            // the canonical Apple JSON output.
             let sql = """
             SELECT
-                f.uri, f.source, f.framework, f.title, f.summary, m.file_path, m.word_count,
+                m.uri, m.source, m.framework,
+                json_extract(m.json_data, '$.title') AS title,
+                json_extract(m.json_data, '$.abstract') AS summary,
+                m.file_path, m.word_count,
                 m.min_ios, m.min_macos, m.min_tvos, m.min_watchos, m.min_visionos
-            FROM docs_fts f
-            JOIN docs_metadata m ON f.uri = m.uri
-            WHERE f.uri = ?
+            FROM docs_metadata m
+            WHERE m.uri = ?
             LIMIT 1;
             """
 
@@ -3345,14 +3354,21 @@ extension Search {
             // Construct expected framework root URI
             let frameworkRootURI = "apple-docs://\(queryLower)/documentation_\(queryLower)"
 
-            // Direct lookup by URI - join FTS for title/summary, metadata for availability
+            // Direct lookup by URI on docs_metadata's TEXT PRIMARY KEY (O(log n)
+            // via the implicit unique index). Joining `docs_fts` would force a
+            // virtual-table SCAN — FTS5 has no queryable index on `uri` — which
+            // costs ~5 s per call on the v1.0 corpus. Title and summary come
+            // from `json_data` via `json_extract`; `abstract` is the
+            // structured-page summary in the canonical Apple JSON output.
             let sql = """
             SELECT
-                f.uri, f.source, f.framework, f.title, f.summary, m.file_path, m.word_count,
+                m.uri, m.source, m.framework,
+                json_extract(m.json_data, '$.title') AS title,
+                json_extract(m.json_data, '$.abstract') AS summary,
+                m.file_path, m.word_count,
                 m.min_ios, m.min_macos, m.min_tvos, m.min_watchos, m.min_visionos
-            FROM docs_fts f
-            JOIN docs_metadata m ON f.uri = m.uri
-            WHERE f.uri = ?
+            FROM docs_metadata m
+            WHERE m.uri = ?
             LIMIT 1;
             """
 
