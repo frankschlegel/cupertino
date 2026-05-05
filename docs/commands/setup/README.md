@@ -14,7 +14,7 @@ The `setup` command downloads pre-built databases from GitHub Releases, providin
 
 This is the **fastest way to get started** with Cupertino.
 
-`search.db` and `samples.db` ship together from the [`cupertino-docs`](https://github.com/mihaelamj/cupertino-docs) releases. `packages.db` ships separately from the [`cupertino-packages`](https://github.com/mihaelamj/cupertino-packages) releases. If the packages release is missing or unreachable, setup logs a warning and still succeeds; cupertino can serve docs without `packages.db`.
+All three databases ship in a single bundle from the [`cupertino-docs`](https://github.com/mihaelamj/cupertino-docs) releases (`cupertino-databases-vX.zip`). One download, one extract, all three databases on disk. (Earlier releases split `packages.db` into a separate companion repo; that proved to be needless complexity and is gone as of v1.0.0.)
 
 ## What Gets Downloaded
 

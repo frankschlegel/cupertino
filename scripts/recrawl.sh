@@ -125,6 +125,6 @@ TOTAL_ELAPSED=$(( $(date +%s) - START_TIME ))
 log "Re-crawl COMPLETE in $((TOTAL_ELAPSED / 60))m $((TOTAL_ELAPSED % 60))s"
 echo
 echo "Next: publish the artifacts per #192 section I."
-echo "  • zip + upload search.db + samples.db to mihaelamj/cupertino-docs"
-echo "  • zip + upload packages.db to mihaelamj/cupertino-packages"
+echo "  • cupertino-rel databases --base-dir <staging-dir>"
+echo "    (bundles search.db + samples.db + packages.db, uploads to mihaelamj/cupertino-docs)"
 echo "  • verify clean-profile install (#192 I6) before tagging v1.0.0"

@@ -188,20 +188,16 @@ extension Shared {
             /// Controls the cupertino-docs release tag that `cupertino setup` downloads from.
             public static let databaseVersion = "1.0.0"
 
-            /// Packages-index version — separate from `databaseVersion` because the package DB
-            /// is sourced from a different repo (`mihaelamj/cupertino-packages`) with its own
-            /// re-crawl cadence. Bump when `packages.db` content or schema changes.
-            public static let packagesIndexVersion = "1.0.0"
-
-            /// Base URL for cupertino-docs release downloads (search.db + samples.db).
+            /// Base URL for cupertino-docs release downloads. As of v1.0.0 the
+            /// single `cupertino-databases-vX.zip` artifact bundles search.db,
+            /// samples.db, and packages.db — earlier versions split packages.db
+            /// into a separate `mihaelamj/cupertino-packages` companion repo
+            /// which is now deprecated.
             public static let docsReleaseBaseURL = "https://github.com/mihaelamj/cupertino-docs/releases/download"
 
-            /// Base URL for cupertino-packages release downloads (packages.db).
-            public static let packagesReleaseBaseURL = "https://github.com/mihaelamj/cupertino-packages/releases/download"
-
             /// Approximate database zip file size for progress display when Content-Length is unknown.
-            /// NOTE: Update this after each database release (current: v0.9.0 ~400MB)
-            public static let approximateZipSize: Int64 = 400 * 1024 * 1024
+            /// v1.0.0 bundle is ~833 MB (search.db + samples.db + packages.db, DEFLATE-compressed).
+            public static let approximateZipSize: Int64 = 850 * 1024 * 1024
         }
 
         // MARK: - Display Names

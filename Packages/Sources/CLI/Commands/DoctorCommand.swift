@@ -303,8 +303,9 @@ struct DoctorCommand: AsyncParsableCommand {
     }
 
     /// #192 F1. Report `packages.db` presence, size, and row counts (packages,
-    /// files). Schema version tracked via the `Shared.Constants.App.packagesIndexVersion`
-    /// constant rather than a PRAGMA (packages.db is downloaded, not migrated).
+    /// files). Schema version tracked via the bundle-wide
+    /// `Shared.Constants.App.databaseVersion` constant rather than a PRAGMA
+    /// (packages.db is downloaded as part of the v1.0+ bundle, not migrated).
     private func checkPackagesDatabase() -> Bool {
         let packagesDBURL = Shared.Constants.defaultPackagesDatabase
 
@@ -313,7 +314,7 @@ struct DoctorCommand: AsyncParsableCommand {
         guard FileManager.default.fileExists(atPath: packagesDBURL.path) else {
             Log.output("   ⚠  Database: \(packagesDBURL.path) (not found)")
             Log.output("     → Run: cupertino setup  (downloads the pre-built packages index)")
-            Log.output("     Expected version: \(Shared.Constants.App.packagesIndexVersion)")
+            Log.output("     Expected version: \(Shared.Constants.App.databaseVersion)")
             Log.output("")
             // Missing packages.db is a warning, not a failure — server still
             // runs, just without the packages tool. Doctor summary stays green.
@@ -328,7 +329,7 @@ struct DoctorCommand: AsyncParsableCommand {
         let fileCount = Diagnostics.Probes.rowCount(at: packagesDBURL, sql: "SELECT COUNT(*) FROM package_files;")
         if let packageCount { Log.output("   ✓ Packages: \(packageCount)") }
         if let fileCount { Log.output("   ✓ Indexed files: \(fileCount)") }
-        Log.output("   ℹ  Bundled version: \(Shared.Constants.App.packagesIndexVersion)")
+        Log.output("   ℹ  Bundled version: \(Shared.Constants.App.databaseVersion)")
         Log.output("")
         return true
     }

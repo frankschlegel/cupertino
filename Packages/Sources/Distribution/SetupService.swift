@@ -5,34 +5,33 @@ import Shared
 extension Distribution {
     /// High-level orchestrator for `cupertino setup`. Composes
     /// `ArtifactDownloader`, `ArtifactExtractor`, and `InstalledVersion`
-    /// into the full pipeline: download docs zip → extract → download
-    /// packages zip → extract → stamp version. UI-free: callers receive
-    /// progress events through `Events` and render whatever animation
-    /// they want.
+    /// into the full pipeline: download the database bundle → extract →
+    /// stamp version. UI-free: callers receive progress events through
+    /// `Event` and render whatever animation they want.
+    ///
+    /// As of v1.0.0 all three databases (search.db / samples.db /
+    /// packages.db) ship in a single `cupertino-databases-vX.zip` artifact
+    /// hosted on `mihaelamj/cupertino-docs`. Earlier versions split the
+    /// packages DB into a separate `mihaelamj/cupertino-packages` repo;
+    /// that repo is deprecated.
     public enum SetupService {
         /// What the caller asked for. Mirrors the `cupertino setup` flag
         /// shape so the CLI maps argv to this struct directly.
         public struct Request: Sendable {
             public let baseDir: URL
             public let currentDocsVersion: String
-            public let currentPackagesVersion: String
             public let docsReleaseBaseURL: String
-            public let packagesReleaseBaseURL: String
             public let keepExisting: Bool
 
             public init(
                 baseDir: URL,
                 currentDocsVersion: String = Shared.Constants.App.databaseVersion,
-                currentPackagesVersion: String = Shared.Constants.App.packagesIndexVersion,
                 docsReleaseBaseURL: String = Shared.Constants.App.docsReleaseBaseURL,
-                packagesReleaseBaseURL: String = Shared.Constants.App.packagesReleaseBaseURL,
                 keepExisting: Bool = false
             ) {
                 self.baseDir = baseDir
                 self.currentDocsVersion = currentDocsVersion
-                self.currentPackagesVersion = currentPackagesVersion
                 self.docsReleaseBaseURL = docsReleaseBaseURL
-                self.packagesReleaseBaseURL = packagesReleaseBaseURL
                 self.keepExisting = keepExisting
             }
         }
@@ -43,7 +42,6 @@ extension Distribution {
             public let searchDBPath: URL
             public let samplesDBPath: URL
             public let packagesDBPath: URL
-            public let packagesInstalled: Bool
             public let docsVersionWritten: String
             /// Hits when `keepExisting: true` and every DB was already
             /// present. The CLI uses this to skip the "downloaded" log.
@@ -65,7 +63,6 @@ extension Distribution {
             case extractStart(label: String)
             case extractTick(label: String)
             case extractComplete(label: String)
-            case packagesDownloadFailed(error: String)
             case finished(Outcome)
         }
 
@@ -106,7 +103,6 @@ extension Distribution {
                     searchDBPath: searchDBURL,
                     samplesDBPath: samplesDBURL,
                     packagesDBPath: packagesDBURL,
-                    packagesInstalled: true,
                     docsVersionWritten: installedVersion ?? request.currentDocsVersion,
                     skippedDownload: true,
                     priorStatus: status
@@ -117,11 +113,9 @@ extension Distribution {
 
             // 0. Back up any pre-existing DBs before the extractor would
             // overwrite them (#249). Each of the three DBs is backed up
-            // only when present on disk: a v0.10.x install has search.db
-            // + samples.db but no packages.db (net-new in v1.0); a
-            // v0.11+ install has all three. The user can roll back by
-            // renaming the backup sibling over the new file if v1.0
-            // misbehaves.
+            // only when present on disk; the helper skips whichever
+            // doesn't exist (e.g. legacy installs where packages.db
+            // wasn't yet part of the bundle).
             try backupExistingDBs(
                 in: request.baseDir,
                 dbURLs: [searchDBURL, samplesDBURL, packagesDBURL],
@@ -129,51 +123,32 @@ extension Distribution {
                 handler: handler
             )
 
-            // 1. Docs zip — bundles search.db + samples.db.
-            let docsZipFilename = "cupertino-databases-v\(request.currentDocsVersion).zip"
-            let docsZipURL = request.baseDir.appendingPathComponent(docsZipFilename)
-            let docsURLString = "\(request.docsReleaseBaseURL)/v\(request.currentDocsVersion)/\(docsZipFilename)"
+            // 1. Single bundle download — search.db + samples.db + packages.db
+            //    all ship together from `mihaelamj/cupertino-docs` as of
+            //    v1.0.0. The packages DB used to live in a separate companion
+            //    repo (`mihaelamj/cupertino-packages`) but was folded into
+            //    the main bundle to keep `cupertino setup` to one download.
+            let zipFilename = "cupertino-databases-v\(request.currentDocsVersion).zip"
+            let zipURL = request.baseDir.appendingPathComponent(zipFilename)
+            let urlString = "\(request.docsReleaseBaseURL)/v\(request.currentDocsVersion)/\(zipFilename)"
 
             try await downloadAndExtract(
                 label: "Documentation databases",
-                from: docsURLString,
-                zipURL: docsZipURL,
+                from: urlString,
+                zipURL: zipURL,
                 destination: request.baseDir,
                 handler: handler
             )
 
-            // Hard-fail if the expected files didn't appear post-extract.
+            // Hard-fail if any expected DB didn't appear post-extract.
             guard FileManager.default.fileExists(atPath: searchDBURL.path) else {
                 throw SetupError.missingFile(Shared.Constants.FileName.searchDatabase)
             }
             guard FileManager.default.fileExists(atPath: samplesDBURL.path) else {
                 throw SetupError.missingFile(Shared.Constants.FileName.samplesDatabase)
             }
-
-            // 2. Packages zip — soft-fail if the companion repo isn't tagged.
-            let packagesZipURL = request.baseDir.appendingPathComponent(
-                PackagesReleaseURL.makeZipFilename(version: request.currentPackagesVersion)
-            )
-            let packagesURLString = PackagesReleaseURL.makeDownloadURL(
-                version: request.currentPackagesVersion,
-                baseURL: request.packagesReleaseBaseURL
-            )
-
-            var packagesInstalled = false
-            do {
-                try await downloadAndExtract(
-                    label: "Packages database",
-                    from: packagesURLString,
-                    zipURL: packagesZipURL,
-                    destination: request.baseDir,
-                    handler: handler
-                )
-                guard FileManager.default.fileExists(atPath: packagesDBURL.path) else {
-                    throw SetupError.missingFile(Shared.Constants.FileName.packagesIndexDatabase)
-                }
-                packagesInstalled = true
-            } catch {
-                handler(.packagesDownloadFailed(error: "\(error)"))
+            guard FileManager.default.fileExists(atPath: packagesDBURL.path) else {
+                throw SetupError.missingFile(Shared.Constants.FileName.packagesIndexDatabase)
             }
 
             // Stamp version on success. Non-fatal; the file is an
@@ -184,7 +159,6 @@ extension Distribution {
                 searchDBPath: searchDBURL,
                 samplesDBPath: samplesDBURL,
                 packagesDBPath: packagesDBURL,
-                packagesInstalled: packagesInstalled,
                 docsVersionWritten: request.currentDocsVersion,
                 skippedDownload: false,
                 priorStatus: status

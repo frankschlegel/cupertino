@@ -5,7 +5,6 @@ import Testing
 
 // MARK: - Backup-existing-DBs (#249)
 
-@Suite("Distribution.SetupService.backupSuffix")
 struct BackupSuffixTests {
     @Test("Includes the installed version + ISO-8601 timestamp")
     func includesVersionAndTimestamp() {
@@ -33,7 +32,6 @@ struct BackupSuffixTests {
     }
 }
 
-@Suite("Distribution.SetupService DB backup integration")
 struct DBBackupIntegrationTests {
     /// End-to-end against a local file: Run `SetupService.run` with a
     /// pre-existing `search.db` on disk; verify it gets renamed to a
@@ -60,10 +58,7 @@ struct DBBackupIntegrationTests {
         // first because it's step 0 of the pipeline.
         let request = Distribution.SetupService.Request(
             baseDir: dir,
-            currentDocsVersion: "1.0.0",
-            currentPackagesVersion: "1.0.0",
-            docsReleaseBaseURL: "http://127.0.0.1:1/",
-            packagesReleaseBaseURL: "http://127.0.0.1:1/",
+            currentDocsVersion: "1.0.0", docsReleaseBaseURL: "http://127.0.0.1:1/",
             keepExisting: false
         )
 
@@ -71,7 +66,9 @@ struct DBBackupIntegrationTests {
         // backup happened first. Capture the events.
         actor EventCollector {
             var events: [Distribution.SetupService.Event] = []
-            func append(_ event: Distribution.SetupService.Event) { events.append(event) }
+            func append(_ event: Distribution.SetupService.Event) {
+                events.append(event)
+            }
         }
         let collector = EventCollector()
 
@@ -128,10 +125,7 @@ struct DBBackupIntegrationTests {
 
         let request = Distribution.SetupService.Request(
             baseDir: dir,
-            currentDocsVersion: "1.0.0",
-            currentPackagesVersion: "1.0.0",
-            docsReleaseBaseURL: "http://127.0.0.1:1/",
-            packagesReleaseBaseURL: "http://127.0.0.1:1/"
+            currentDocsVersion: "1.0.0", docsReleaseBaseURL: "http://127.0.0.1:1/"
         )
         _ = try? await Distribution.SetupService.run(request) { _ in }
         try await Task.sleep(nanoseconds: 100000000)
@@ -158,10 +152,7 @@ struct DBBackupIntegrationTests {
         // No DBs, no version stamp.
         let request = Distribution.SetupService.Request(
             baseDir: dir,
-            currentDocsVersion: "1.0.0",
-            currentPackagesVersion: "1.0.0",
-            docsReleaseBaseURL: "http://127.0.0.1:1/",
-            packagesReleaseBaseURL: "http://127.0.0.1:1/"
+            currentDocsVersion: "1.0.0", docsReleaseBaseURL: "http://127.0.0.1:1/"
         )
 
         _ = try? await Distribution.SetupService.run(request) { _ in }

@@ -98,12 +98,13 @@ The user-facing label is **smart-query** (lowercase prose). The technique is **r
 **Doctor diagnostics (#192 section F)**
 - `cupertino doctor` reports both `search.db` and `packages.db` presence, file size, row counts. Reads `PRAGMA user_version` directly (without going through `Search.Index`, whose init throws on incompatible versions) so the user sees the actual on-disk version even when it's incompatible.
 - Schema-mismatch path: `older` → "rm + cupertino save" hint, `newer` → "brew upgrade cupertino" hint. Exits non-zero so CI / smoke tests fail loudly.
-- `packages.db` row counts (packages, package_files) + bundled `packagesIndexVersion` for at-a-glance install verification.
+- `packages.db` row counts (packages, package_files) + bundled `databaseVersion` for at-a-glance install verification.
 
 **Distribution + packaging (#192 section B)**
-- Companion repo [mihaelamj/cupertino-packages](https://github.com/mihaelamj/cupertino-packages) ships `packages.db` artifacts. First release lands with v1.0.0.
-- `cupertino setup` is now the **single command** that owns every database. Downloads search.db + samples.db from `cupertino-docs`, then packages.db from `cupertino-packages`. No granularity flag — the previous `cupertino packages-setup` is removed; URL helpers preserved as `PackagesReleaseURL` for tests. Best-effort on the packages download: if the cupertino-packages release isn't tagged yet, setup logs a warning and still completes (cupertino can serve docs without packages.db).
-- `Shared.Constants.App.packagesIndexVersion` + `packagesReleaseBaseURL` + `docsReleaseBaseURL` constants.
+- All three databases ship in a **single bundle** — `cupertino-databases-vX.zip` on `mihaelamj/cupertino-docs`. v1.0.0 is the first release where `packages.db` is included alongside `search.db` and `samples.db`. (Earlier scoping had a separate `mihaelamj/cupertino-packages` companion repo for `packages.db`; that proved to be needless complexity. Setup is one download, one extract.)
+- `cupertino setup` is the **single command** that owns every database. Downloads + extracts the bundle from `cupertino-docs` and stamps the version file on success. No granularity flag — the previous `cupertino packages-setup` is removed.
+- `cupertino-rel databases` (the release tool) bundles all three DBs together. Hard-fails if `packages.db` is missing under `--base-dir` unless `--allow-missing-packages` is passed; lets a release runner publish a partial bundle in genuinely time-sensitive cases without making it the default. (#259)
+- `Shared.Constants.App.docsReleaseBaseURL` is the only release URL constant.
 
 **Per-URL JSON-then-WebView fallback (`fetch --type docs`)**
 - `cupertino fetch --type docs` does a single pass through the queue, trying Apple's JSON API for each URL and falling back to WKWebView when a page has no JSON endpoint. **One of cupertino's coverage advantages over single-pass JSON-only MCPs** — every URL gets a chance at both transports without doubling the queue. (The fallback was already implemented in `Crawler.swift`; the previous "two-pass" orchestration in `FetchCommand` was redundant — it ran the same crawler twice — and is now removed along with the dead `--use-json-api` flag.)
@@ -151,7 +152,7 @@ The user-facing label is **smart-query** (lowercase prose). The technique is **r
 - **`make test-clean` Makefile target** — `clean + test` in one command. Escape hatch for the Swift 6.2 / macOS 26 SwiftPM incremental-build bug where adding a method to an actor leaves stale `.o` files and async dispatch lands in the wrong slot. Documented in `CONTRIBUTING.md` Troubleshooting + `mihaela-agents/Rules/ai-agent-rules/testing.md`.
 - **stdout line-buffered when piped**: `Cupertino.main()` calls `setvbuf(stdout, nil, _IOLBF, 0)` so `cupertino fetch ... | tee` flushes per-line instead of every 4–8 KB. No more "appears hung for 5 minutes then dumps a chunk" surprise on long crawls.
 - **`fetch --type package-docs` now extracts a filtered tarball, not a single README**: `PackageArchiveExtractor` (Core actor) pulls `https://codeload.github.com/<owner>/<repo>/tar.gz/<ref>` (HEAD → main → master fallback) and extracts README, CHANGELOG, LICENSE, `Package.swift`, all of `Sources/` + `Tests/`, every `.docc` article and tutorial, `Examples/` / `Demo/` directories, plus a per-package `manifest.json`. Same on-disk layout as before (`~/.cupertino/packages/<owner>/<repo>/`), but materially richer payload. Drives this shift: 5-line stub READMEs (vapor/leaf, etc.) made the prior README-only index nearly worthless for AI-agent "how do I use X?" queries — the source itself is now the last-resort fallback.
-- **`cupertino fetch --type package-docs` hidden from public help**: still functional, but no longer advertised — typical users get package data via the curated `packages.db` from the cupertino-packages release. The full crawl is for re-building artifacts, not for end users.
+- **`cupertino fetch --type package-docs` hidden from public help**: still functional, but no longer advertised — typical users get package data via the curated `packages.db` bundled in the `cupertino-docs` release zip. The full crawl is for re-building artifacts, not for end users.
 
 ### Fixed
 

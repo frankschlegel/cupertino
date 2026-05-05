@@ -94,13 +94,6 @@ private final class SetupRenderer: @unchecked Sendable {
             printRaw("\(clearLine)")
             Logging.ConsoleLogger.info("   ✓ Extracted")
 
-        case .packagesDownloadFailed(let error):
-            Logging.ConsoleLogger.info(
-                "⚠️  Packages database download failed: \(error). " +
-                    "cupertino will run without packages search; rerun `cupertino setup` once " +
-                    "the cupertino-packages release is published."
-            )
-
         case .finished:
             break
         }
@@ -115,11 +108,7 @@ private final class SetupRenderer: @unchecked Sendable {
         }
         Logging.ConsoleLogger.info("   Documentation: \(outcome.searchDBPath.path)")
         Logging.ConsoleLogger.info("   Sample code:   \(outcome.samplesDBPath.path)")
-        if outcome.packagesInstalled {
-            Logging.ConsoleLogger.info("   Packages:      \(outcome.packagesDBPath.path)")
-        } else {
-            Logging.ConsoleLogger.info("   Packages:      (not installed — see warning above)")
-        }
+        Logging.ConsoleLogger.info("   Packages:      \(outcome.packagesDBPath.path)")
         Logging.ConsoleLogger.info("   Version:       \(outcome.docsVersionWritten)")
         Logging.ConsoleLogger.info("\n💡 Start the server with: cupertino serve")
     }

@@ -54,4 +54,4 @@ cupertino package-search "json codable" --platform iOS --min-version 13.0
 
 - [ask](../ask/) — unified surface across all sources
 - [search](../search/) — single-source FTS with `MATCH` syntax
-- [setup](../setup/) — provisions `packages.db` (downloaded from `cupertino-packages`)
+- [setup](../setup/) — provisions `packages.db` (bundled in the `cupertino-docs` release zip alongside `search.db` and `samples.db`)
