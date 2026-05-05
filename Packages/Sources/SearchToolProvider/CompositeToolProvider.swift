@@ -654,7 +654,7 @@ public actor CompositeToolProvider: ToolProvider {
         }
 
         if projects.isEmpty {
-            markdown += "_No projects found. Run `cupertino index` to index sample code._\n"
+            markdown += "_No projects found. Run `cupertino save --samples` to index sample code._\n"
         } else {
             markdown += "| Project | Framework | Files |\n"
             markdown += "|---------|-----------|------:|\n"

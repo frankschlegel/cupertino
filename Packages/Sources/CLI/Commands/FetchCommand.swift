@@ -2,12 +2,19 @@ import ArgumentParser
 import Availability
 import Core
 import Foundation
+import Ingest
 import Logging
+import Search
 import Shared
+
+/// Lets ArgumentParser parse `--discovery-mode <mode>` directly into the
+/// shared enum. The conformance lives here (not in Shared) so the Shared
+/// module doesn't take on an ArgumentParser dependency.
+extension Shared.DiscoveryMode: ExpressibleByArgument {}
 
 // MARK: - Fetch Command
 
-// swiftlint:disable type_body_length
+// swiftlint:disable type_body_length file_length function_body_length
 // Justification: FetchCommand handles 10+ different fetch types (docs, evolution, packages, code, etc.)
 // Each type has distinct configuration, progress reporting, and error handling.
 // Splitting into separate commands would duplicate shared options and break the unified fetch interface.
@@ -25,8 +32,9 @@ struct FetchCommand: AsyncParsableCommand {
         name: .long,
         help: """
         Type of documentation to fetch: docs (Apple), swift (Swift.org), \
-        evolution (Swift Evolution), packages (Swift package metadata), \
-        package-docs (Swift package READMEs), code (Sample code from Apple), \
+        evolution (Swift Evolution), \
+        packages (Swift package metadata + archives — see --skip-metadata / --skip-archives), \
+        code (Sample code from Apple), \
         samples (Sample code from GitHub - recommended), \
         archive (Apple Archive guides), hig (Human Interface Guidelines), \
         availability (API version info for existing docs), \
@@ -56,11 +64,60 @@ struct FetchCommand: AsyncParsableCommand {
     )
     var allowedPrefixes: String?
 
-    @Flag(name: .long, help: "Force recrawl of all pages")
+    @Flag(name: .long, help: "Force recrawl of all pages (re-fetch even unchanged content)")
     var force: Bool = false
 
-    @Flag(name: .long, help: "Resume from saved session (auto-detects and continues)")
-    var resume: Bool = false
+    @Flag(name: .long, help: "Ignore any saved session and start fresh from the seed URL")
+    var startClean: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Re-queue URLs that errored before save (visited but missing from \
+        the pages dict). Use after a filename or save bug is fixed to \
+        retry the affected pages without re-crawling the whole corpus.
+        """
+    )
+    var retryErrors: Bool = false
+
+    @Option(
+        name: .long,
+        help: """
+        Path to a known-good baseline corpus directory (e.g. a prior \
+        cupertino-docs/docs snapshot). On startup, URLs present in the \
+        baseline but not in the current crawl's known set (queue / visited \
+        / pages) are prepended to the queue so the resumed crawl recovers \
+        gaps without re-crawling the whole corpus. Comparison is \
+        case-insensitive on the path.
+        """
+    )
+    var baseline: String?
+
+    @Option(
+        name: .long,
+        help: """
+        Path to a text file containing one URL per line. Each URL is \
+        enqueued at depth 0; the crawler follows links from each up to \
+        --max-depth, so set --max-depth 0 to fetch only the listed URLs \
+        with no descent, --max-depth 3 to follow 3 levels of children, etc. \
+        Useful for fetching a fixed list — e.g. URLs another corpus has \
+        but this one is missing — without re-spidering everything. Lines \
+        starting with '#' and blank lines are ignored. (#210)
+        """
+    )
+    var urls: String?
+
+    @Option(
+        name: .long,
+        help: """
+        Discovery mode: \
+        auto (default — JSON API primary, WKWebView fallback when JSON 404s), \
+        json-only (JSON only, no WKWebView fallback — fastest, narrowest), \
+        webview-only (WKWebView for everything — slowest, broadest discovery, \
+        matches pre-2025-11-30 behavior).
+        """
+    )
+    var discoveryMode: Shared.DiscoveryMode = .auto
 
     @Flag(name: .long, inversion: .prefixedNo, help: "Only download accepted/implemented proposals (evolution type only)")
     var onlyAccepted: Bool = true
@@ -68,14 +125,51 @@ struct FetchCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum number of items to fetch (packages/code types only)")
     var limit: Int?
 
-    @Flag(name: .long, help: "Launch visible browser for authentication (code type only)")
-    var authenticate: Bool = false
-
-    @Flag(name: .long, help: "Use Apple's JSON API instead of WKWebView (faster, no memory issues)")
-    var useJsonApi: Bool = false
-
     @Flag(name: .long, help: "Use fast mode (higher concurrency, shorter timeout) for availability fetch")
     var fast: Bool = false
+
+    @Flag(
+        name: .long,
+        inversion: .prefixedNo,
+        help: .hidden
+    )
+    var recurse: Bool = true
+
+    @Flag(
+        name: .long,
+        help: .hidden
+    )
+    var refresh: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Skip the Swift Package Index metadata refresh stage of \
+        `--type packages` (run only the archive download). #217
+        """
+    )
+    var skipMetadata: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Skip the GitHub archive download stage of `--type packages` \
+        (run only the metadata refresh). #217
+        """
+    )
+    var skipArchives: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        After `--type packages` stage 2, walk the on-disk corpus and \
+        write a per-package `availability.json` recording \
+        `Package.swift` deployment targets and every `@available(...)` \
+        attribute occurrence in `Sources/` and `Tests/` (#219). Pure \
+        on-disk pass — no network. Idempotent.
+        """
+    )
+    var annotateAvailability: Bool = false
 
     mutating func run() async throws {
         logStartMessage()
@@ -85,14 +179,9 @@ struct FetchCommand: AsyncParsableCommand {
             return
         }
 
-        // Direct fetch types (packages, package-docs, code)
+        // Direct fetch types (packages, code)
         if type == .packages {
             try await runPackageFetch()
-            return
-        }
-
-        if type == .packageDocs {
-            try await runPackageDocsFetch()
             return
         }
 
@@ -131,11 +220,16 @@ struct FetchCommand: AsyncParsableCommand {
     }
 
     private func logStartMessage() {
-        if resume {
-            Logging.ConsoleLogger.info("🔄 Cupertino - Resuming from saved session\n")
-        } else {
-            Logging.ConsoleLogger.info("🚀 Cupertino - Fetching \(type.displayName)\n")
-        }
+        // The Crawler auto-resumes whenever metadata.json's crawlState is active
+        // and matches the start URL — no flag needed. We log "Fetching" here
+        // unconditionally; the Crawler itself prints "🔄 Found resumable session"
+        // when it actually loads saved state.
+        Logging.ConsoleLogger.info("🚀 Cupertino - Fetching \(type.displayName)")
+        // Print the resolved output directory at startup so #212-style
+        // BinaryConfig misrouting is immediately visible.
+        let resolvedOutputDir = outputDir.flatMap { URL(fileURLWithPath: $0).expandingTildeInPath.path }
+            ?? type.defaultOutputDir
+        Logging.ConsoleLogger.info("   Output: \(resolvedOutputDir)\n")
     }
 
     private mutating func runAllFetches() async throws {
@@ -205,9 +299,56 @@ struct FetchCommand: AsyncParsableCommand {
     private mutating func runStandardCrawl() async throws {
         let url = try validateStartURL()
         let outputDirectory = try await determineOutputDirectory(for: url)
+        if startClean {
+            try Ingest.Session.clearSavedSession(at: outputDirectory)
+        }
+        if retryErrors {
+            try Ingest.Session.requeueErroredURLs(at: outputDirectory, maxDepth: maxDepth)
+        }
+        if let baselinePath = baseline {
+            let baselineURL = URL(fileURLWithPath: baselinePath).expandingTildeInPath
+            try Ingest.Session.requeueFromBaseline(at: outputDirectory, baselineDir: baselineURL, maxDepth: maxDepth)
+        }
+        if let urlsPath = urls {
+            let urlsURL = URL(fileURLWithPath: urlsPath).expandingTildeInPath
+            try Ingest.Session.enqueueURLsFromFile(
+                at: outputDirectory,
+                urlsFile: urlsURL,
+                maxDepth: maxDepth,
+                startURL: url
+            )
+        }
         let config = createConfiguration(url: url, outputDirectory: outputDirectory)
         try await executeCrawl(with: config)
     }
+
+    // clearSavedSession lifted to Ingest.Session.clearSavedSession (#247)
+
+    // requeueErroredURLs lifted to Ingest.Session.requeueErroredURLs (#247)
+
+    /// Inject URLs from a known-good baseline corpus that aren't in the
+    /// current crawl's known set (queue ∪ visited ∪ pages keys). Comparison
+    /// is case-insensitive on the URL path so the broken-extractor's
+    /// case-mixed output still matches the baseline's casing.
+    ///
+    /// `baselineDir` should point at the `docs/` subtree of a prior corpus
+    /// (e.g. `~/Developer/.../cupertino-docs/docs`). Each file's `.url` field
+    /// is read; URLs not in the current set are prepended to the queue at
+    /// `maxDepth` so the resumed crawl doesn't re-discover their children
+    /// (which the baseline already crawled).
+    ///
+    // requeueFromBaseline lifted to Ingest.Session.requeueFromBaseline (#247)
+
+    /// Enqueue every URL listed in `urlsFile` (one URL per line) at
+    /// depth 0. The crawler then follows each URL's outgoing links up
+    /// to `maxDepth`, so the caller can use `--max-depth` to control
+    /// how deep the descent tree goes (`--max-depth 0` = no descent,
+    /// just fetch the listed URLs themselves). Lines starting with `#`
+    /// and blank lines are ignored. Initialises `crawlState` if missing
+    /// so the helper works against a fresh corpus too. (#210)
+    ///
+    // enqueueURLsFromFile + collectBaselineURLs + lowercaseDocPath all lifted
+    // to Ingest.Session in #247.
 
     private func validateStartURL() throws -> URL {
         let urlString = startURL ?? type.defaultURL
@@ -233,7 +374,7 @@ struct FetchCommand: AsyncParsableCommand {
         ]
 
         for candidate in candidates {
-            if let sessionDir = checkForSession(at: candidate, matching: url) {
+            if let sessionDir = Ingest.Session.checkForSession(at: candidate, matching: url) {
                 return sessionDir
             }
         }
@@ -241,23 +382,7 @@ struct FetchCommand: AsyncParsableCommand {
         return try await scanCupertinoDirectory(for: url)
     }
 
-    private func checkForSession(at directory: URL, matching url: URL) -> URL? {
-        let metadataFile = directory.appendingPathComponent(Shared.Constants.FileName.metadata)
-        guard FileManager.default.fileExists(atPath: metadataFile.path),
-              let data = try? Data(contentsOf: metadataFile),
-              let metadata = try? JSONCoding.decode(CrawlMetadata.self, from: data),
-              let session = metadata.crawlState,
-              session.isActive,
-              session.startURL == url.absoluteString
-        else {
-            return nil
-        }
-        let outputDir = URL(fileURLWithPath: session.outputDirectory)
-        Logging.ConsoleLogger.info(
-            "📂 Found existing session, resuming to: \(session.outputDirectory)"
-        )
-        return outputDir
-    }
+    // checkForSession lifted to Ingest.Session.checkForSession (#247)
 
     private func scanCupertinoDirectory(for url: URL) async throws -> URL? {
         let cupertinoDir = Shared.Constants.defaultBaseDirectory
@@ -275,7 +400,7 @@ struct FetchCommand: AsyncParsableCommand {
             guard isDirectory == true else {
                 continue
             }
-            if let sessionDir = checkForSession(at: dir, matching: url) {
+            if let sessionDir = Ingest.Session.checkForSession(at: dir, matching: url) {
                 return sessionDir
             }
         }
@@ -300,7 +425,7 @@ struct FetchCommand: AsyncParsableCommand {
                 maxPages: maxPages,
                 maxDepth: maxDepth,
                 outputDirectory: outputDirectory,
-                useJSONAPI: useJsonApi
+                discoveryMode: discoveryMode
             ),
             changeDetection: Shared.ChangeDetectionConfiguration(
                 forceRecrawl: force,
@@ -358,11 +483,25 @@ struct FetchCommand: AsyncParsableCommand {
         }
     }
 
+    /// `--type packages` — runs metadata refresh then archive download in
+    /// sequence. Either stage can be skipped via `--skip-metadata` /
+    /// `--skip-archives`. The two were separate fetch types until #217;
+    /// merged because they always ran back-to-back, shared the output dir,
+    /// and the `package-docs` name was misleading (it fetches whole archives,
+    /// not READMEs). Stage 2 reads `PriorityPackagesCatalog`, not the
+    /// metadata catalog, so the stages are independent.
     private func runPackageFetch() async throws {
         let defaultPath = Shared.Constants.defaultPackagesDirectory.path
         let outputURL = URL(fileURLWithPath: outputDir ?? defaultPath).expandingTildeInPath
 
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+
+        if skipMetadata, skipArchives, !annotateAvailability {
+            Logging.ConsoleLogger.error(
+                "❌ Both --skip-metadata and --skip-archives passed without --annotate-availability — nothing to do."
+            )
+            throw ExitCode.failure
+        }
 
         if ProcessInfo.processInfo.environment[Shared.Constants.EnvVar.githubToken] == nil {
             Logging.ConsoleLogger.info(Shared.Constants.Message.gitHubTokenTip)
@@ -371,10 +510,86 @@ struct FetchCommand: AsyncParsableCommand {
             Logging.ConsoleLogger.info("   \(Shared.Constants.Message.exportGitHubToken)\n")
         }
 
+        if !skipMetadata {
+            try await runPackageMetadataStage(outputURL: outputURL)
+        } else {
+            Logging.ConsoleLogger.info("⏭  --skip-metadata: skipping Swift Package Index metadata refresh")
+        }
+
+        if !skipArchives {
+            try await runPackageArchivesStage(outputURL: outputURL)
+        } else {
+            Logging.ConsoleLogger.info("⏭  --skip-archives: skipping GitHub archive download")
+        }
+
+        if annotateAvailability {
+            try await runPackageAnnotationStage(outputURL: outputURL)
+        }
+    }
+
+    /// Stage 3 (#219): walk every `<owner>/<repo>/` subdir under `outputURL`
+    /// and write `availability.json` capturing `Package.swift` deployment
+    /// targets and every `@available(...)` attribute occurrence in the
+    /// `Sources/` and `Tests/` trees. Pure on-disk pass — runs whether or
+    /// not stage 2 just downloaded fresh archives. Idempotent.
+    private func runPackageAnnotationStage(outputURL: URL) async throws {
+        Logging.ConsoleLogger.info("🏷  Stage 3 — Annotating availability metadata (#219)")
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: outputURL.path) else {
+            Logging.ConsoleLogger.error(
+                "❌ Packages directory \(outputURL.path) doesn't exist — run with stage 2 first."
+            )
+            throw ExitCode.failure
+        }
+
+        let owners = (try? fm.contentsOfDirectory(at: outputURL, includingPropertiesForKeys: nil))?
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .filter { !$0.lastPathComponent.hasPrefix(".") }
+            ?? []
+
+        let annotator = Core.PackageAvailabilityAnnotator()
+        var packagesAnnotated = 0
+        var totalAttrs = 0
+        let startedAt = Date()
+
+        for ownerURL in owners.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let repos = (try? fm.contentsOfDirectory(at: ownerURL, includingPropertiesForKeys: nil))?
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .filter { !$0.lastPathComponent.hasPrefix(".") }
+                ?? []
+
+            for repoURL in repos.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let label = "\(ownerURL.lastPathComponent)/\(repoURL.lastPathComponent)"
+                do {
+                    let result = try await annotator.annotate(packageDirectory: repoURL)
+                    packagesAnnotated += 1
+                    totalAttrs += result.stats.totalAttributes
+                    Logging.ConsoleLogger.info(
+                        "  ✅ \(label) — \(result.stats.totalAttributes) @available attrs across "
+                            + "\(result.stats.filesWithAvailability)/\(result.stats.filesScanned) files"
+                    )
+                } catch {
+                    Logging.ConsoleLogger.error("  ✗ \(label) — \(error.localizedDescription)")
+                }
+            }
+        }
+
+        let duration = Int(Date().timeIntervalSince(startedAt))
+        Logging.ConsoleLogger.output("")
+        Logging.ConsoleLogger.info("✅ Annotation completed")
+        Logging.ConsoleLogger.info("   Packages annotated: \(packagesAnnotated)")
+        Logging.ConsoleLogger.info("   Total @available attrs: \(totalAttrs)")
+        Logging.ConsoleLogger.info("   Duration: \(duration)s")
+    }
+
+    private func runPackageMetadataStage(outputURL: URL) async throws {
+        Logging.ConsoleLogger.info("📇 Stage 1/2 — Refreshing Swift Package Index metadata")
+
         let fetcher = Core.PackageFetcher(
             outputDirectory: outputURL,
             limit: limit,
-            resume: resume
+            resume: !startClean
         )
 
         let stats = try await fetcher.fetch { progress in
@@ -383,29 +598,29 @@ struct FetchCommand: AsyncParsableCommand {
         }
 
         Logging.ConsoleLogger.output("")
-        Logging.ConsoleLogger.info("✅ Fetch completed!")
+        Logging.ConsoleLogger.info("✅ Metadata refresh completed")
         Logging.ConsoleLogger.info("   Total packages: \(stats.totalPackages)")
         Logging.ConsoleLogger.info("   Successful: \(stats.successfulFetches)")
         Logging.ConsoleLogger.info("   Errors: \(stats.errors)")
         if let duration = stats.duration {
             Logging.ConsoleLogger.info("   Duration: \(Int(duration))s")
         }
-        Logging.ConsoleLogger.info("\n📁 Output: \(outputURL.path)/\(Shared.Constants.FileName.packagesWithStars)")
+        Logging.ConsoleLogger.info("   📁 \(outputURL.path)/\(Shared.Constants.FileName.packagesWithStars)\n")
     }
 
-    private func runPackageDocsFetch() async throws {
-        let defaultPath = Shared.Constants.defaultPackagesDirectory.path
-        let outputURL = URL(fileURLWithPath: outputDir ?? defaultPath).expandingTildeInPath
-
-        try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+    private func runPackageArchivesStage(outputURL: URL) async throws {
+        Logging.ConsoleLogger.info("📦 Stage 2/2 — Downloading priority package archives")
 
         // Load priority packages
         let priorityPackages = await PriorityPackagesCatalog.allPackages
 
         guard !priorityPackages.isEmpty else {
+            let priorityPackagesPath = Shared.Constants.defaultPackagesDirectory
+                .appendingPathComponent(Shared.Constants.FileName.priorityPackages)
+                .path
             Logging.ConsoleLogger.error("❌ Error: No priority packages found")
             Logging.ConsoleLogger.error("   Searched:")
-            Logging.ConsoleLogger.error("   - ~/.cupertino/packages/priority-packages.json")
+            Logging.ConsoleLogger.error("   - \(priorityPackagesPath)")
             Logging.ConsoleLogger.error("   - Shared.Constants.CriticalApplePackages")
             Logging.ConsoleLogger.error("   - Shared.Constants.KnownEcosystemPackages")
             Logging.ConsoleLogger.error("\n   Please ensure at least one package source is configured.")
@@ -413,7 +628,7 @@ struct FetchCommand: AsyncParsableCommand {
         }
 
         // Convert to PackageReference format
-        let packageRefs = priorityPackages.compactMap { pkg -> PackageReference? in
+        let seedRefs = priorityPackages.compactMap { pkg -> PackageReference? in
             // Extract owner from URL if not provided
             let owner: String
             if let explicitOwner = pkg.owner, !explicitOwner.isEmpty {
@@ -441,26 +656,180 @@ struct FetchCommand: AsyncParsableCommand {
             )
         }
 
-        Logging.ConsoleLogger.info("📦 Downloading documentation for \(packageRefs.count) priority packages...")
-        Logging.ConsoleLogger.info("   Output: \(outputURL.path)\n")
+        let exclusions = Core.ExclusionList.load()
+        let seedChecksum = Core.ResolvedPackagesStore.checksum(seeds: seedRefs, exclusions: exclusions)
+        let resolvedStoreURL = Shared.Constants.defaultBaseDirectory
+            .appendingPathComponent(Shared.Constants.FileName.resolvedPackages)
+        let canonicalCacheURL = Shared.Constants.defaultBaseDirectory
+            .appendingPathComponent(".cache")
+            .appendingPathComponent(Shared.Constants.FileName.canonicalOwnersCache)
 
-        let downloader = Core.PackageDocumentationDownloader(outputDirectory: outputURL)
+        let resolvedPackages: [Core.ResolvedPackage]
+        if recurse {
+            if !refresh,
+               let cached = Core.ResolvedPackagesStore.load(from: resolvedStoreURL),
+               cached.seedChecksum == seedChecksum {
+                Logging.ConsoleLogger.info("🔗 Using cached closure from resolved-packages.json (\(cached.packages.count) packages, generated \(cached.generatedAt))")
+                resolvedPackages = cached.packages
+            } else {
+                if refresh {
+                    Logging.ConsoleLogger.info("🔗 --refresh: discarding cached closure, re-walking dependency graphs...")
+                } else {
+                    Logging.ConsoleLogger.info("🔗 Resolving transitive dependencies for \(seedRefs.count) seed packages...")
+                }
+                if !exclusions.isEmpty {
+                    Logging.ConsoleLogger.info("   Exclusion list in effect: \(exclusions.count) entries")
+                }
+                let canonicalizer = Core.GitHubCanonicalizer(cacheURL: canonicalCacheURL)
+                let manifestCache = Core.ManifestCache(
+                    rootDirectory: Shared.Constants.defaultBaseDirectory
+                        .appendingPathComponent(".cache")
+                        .appendingPathComponent("manifests")
+                )
+                let resolver = Core.PackageDependencyResolver(
+                    canonicalizer: canonicalizer,
+                    exclusions: exclusions,
+                    manifestCache: manifestCache
+                )
+                let (resolved, resolverStats) = await resolver.resolve(seeds: seedRefs) { name, done, total in
+                    if done == 1 || done % 10 == 0 || done == total {
+                        Logging.ConsoleLogger.output("   Resolving: \(done)/\(total) (\(name))")
+                    }
+                }
+                resolvedPackages = resolved
+                Logging.ConsoleLogger.info("   Seeds: \(resolverStats.seedCount)")
+                Logging.ConsoleLogger.info("   Discovered via dependencies: \(resolverStats.discoveredCount)")
+                Logging.ConsoleLogger.info("   Excluded: \(resolverStats.excludedCount)")
+                Logging.ConsoleLogger.info("   Skipped (non-GitHub): \(resolverStats.skippedNonGitHub)")
+                Logging.ConsoleLogger.info("   Skipped (SPM registry id): \(resolverStats.skippedRegistry)")
+                Logging.ConsoleLogger.info("   Missing manifest: \(resolverStats.missingManifest)")
+                Logging.ConsoleLogger.info("   Malformed manifest: \(resolverStats.malformedManifest)")
+                Logging.ConsoleLogger.info("   Resolver duration: \(Int(resolverStats.duration))s")
 
-        let stats = try await downloader.download(packages: packageRefs) { progress in
-            let percent = String(format: "%.1f", progress.percentage)
-            Logging.ConsoleLogger.output("   Progress: \(percent)% - \(progress.currentPackage)")
+                let store = Core.ResolvedPackagesStore(
+                    cupertinoVersion: Shared.Constants.App.version,
+                    seedChecksum: seedChecksum,
+                    packages: resolved
+                )
+                do {
+                    try store.write(to: resolvedStoreURL)
+                    Logging.ConsoleLogger.info("   Saved closure to \(resolvedStoreURL.path)")
+                } catch {
+                    Logging.ConsoleLogger.error("   ⚠️  Could not persist resolved-packages.json: \(error)")
+                }
+            }
+        } else {
+            resolvedPackages = seedRefs.map { ref in
+                Core.ResolvedPackage(
+                    owner: ref.owner,
+                    repo: ref.repo,
+                    url: ref.url,
+                    priority: ref.priority,
+                    parents: ["\(ref.owner.lowercased())/\(ref.repo.lowercased())"]
+                )
+            }
+            Logging.ConsoleLogger.info("🔗 Skipping dependency resolution (--no-recurse)")
+            if !exclusions.isEmpty {
+                Logging.ConsoleLogger.info("   Exclusion list ignored while --no-recurse is set")
+            }
         }
 
+        Logging.ConsoleLogger.info("📦 Fetching \(resolvedPackages.count) archives into \(outputURL.path)...")
+
+        let extractor = Core.PackageArchiveExtractor()
+        let startedAt = Date()
+        var stats = PackageDownloadStatistics(
+            totalPackages: resolvedPackages.count,
+            startTime: startedAt
+        )
+        for (idx, pkg) in resolvedPackages.enumerated() {
+            let label = "\(pkg.owner)/\(pkg.repo)"
+            let pkgDir = outputURL
+                .appendingPathComponent(pkg.owner)
+                .appendingPathComponent(pkg.repo)
+            do {
+                let extraction = try await extractor.fetchAndExtract(
+                    owner: pkg.owner,
+                    repo: pkg.repo,
+                    destination: pkgDir
+                )
+                try writePackageManifest(
+                    resolved: pkg,
+                    extraction: extraction,
+                    destination: pkgDir
+                )
+                stats.newPackages += 1
+                stats.totalFilesSaved += extraction.files.count
+                stats.totalBytesSaved += extraction.totalBytes
+                let kb = extraction.totalBytes / 1024
+                Logging.ConsoleLogger.info("  ✅ \(label) — \(extraction.files.count) files, \(kb) KB")
+            } catch Core.PackageArchiveExtractor.ExtractError.tarballNotFound {
+                stats.errors += 1
+                Logging.ConsoleLogger.error("  ✗ \(label) — archive not found on any ref")
+            } catch Core.PackageArchiveExtractor.ExtractError.tarballTooLarge(let bytes) {
+                stats.errors += 1
+                Logging.ConsoleLogger.error("  ✗ \(label) — archive too large (\(bytes / 1024 / 1024) MB)")
+            } catch {
+                stats.errors += 1
+                Logging.ConsoleLogger.error("  ✗ \(label) — \(error.localizedDescription)")
+            }
+
+            if (idx + 1) % Shared.Constants.Interval.progressLogEvery == 0 || idx + 1 == resolvedPackages.count {
+                let percent = Double(idx + 1) / Double(resolvedPackages.count) * 100
+                Logging.ConsoleLogger.output(
+                    String(format: "📊 Progress: %.1f%% (%d/%d)", percent, idx + 1, resolvedPackages.count)
+                )
+            }
+        }
+        stats.endTime = Date()
+
         Logging.ConsoleLogger.output("")
-        Logging.ConsoleLogger.info("✅ Download completed!")
-        Logging.ConsoleLogger.info("   Total packages: \(stats.totalPackages)")
-        Logging.ConsoleLogger.info("   New READMEs: \(stats.newREADMEs)")
-        Logging.ConsoleLogger.info("   Updated READMEs: \(stats.updatedREADMEs)")
+        Logging.ConsoleLogger.info("✅ Archive download completed")
+        Logging.ConsoleLogger.info("   New packages: \(stats.newPackages)")
+        Logging.ConsoleLogger.info("   Files saved: \(stats.totalFilesSaved)")
+        Logging.ConsoleLogger.info("   Bytes saved: \(stats.totalBytesSaved / 1024) KB")
         Logging.ConsoleLogger.info("   Errors: \(stats.errors)")
         if let duration = stats.duration {
             Logging.ConsoleLogger.info("   Duration: \(Int(duration))s")
         }
-        Logging.ConsoleLogger.info("\n📁 Output: \(outputURL.path)/")
+        Logging.ConsoleLogger.info("   📁 \(outputURL.path)")
+        Logging.ConsoleLogger.info("   Next: index them into \(Shared.Constants.defaultPackagesDatabase.path) via `save --packages`")
+    }
+
+    private func writePackageManifest(
+        resolved: Core.ResolvedPackage,
+        extraction: Core.PackageArchiveExtractor.Result,
+        destination: URL
+    ) throws {
+        struct Manifest: Encodable {
+            let owner: String
+            let repo: String
+            let url: String
+            let fetchedAt: Date
+            let cupertinoVersion: String
+            let branch: String
+            let parents: [String]
+            let savedFileCount: Int
+            let totalBytes: Int64
+            let tarballBytes: Int
+        }
+        let manifest = Manifest(
+            owner: resolved.owner,
+            repo: resolved.repo,
+            url: resolved.url,
+            fetchedAt: Date(),
+            cupertinoVersion: Shared.Constants.App.version,
+            branch: extraction.branch,
+            parents: resolved.parents,
+            savedFileCount: extraction.files.count,
+            totalBytes: extraction.totalBytes,
+            tarballBytes: extraction.tarballBytes
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(manifest)
+        try data.write(to: destination.appendingPathComponent("manifest.json"))
     }
 
     private func runCodeFetch() async throws {
@@ -472,8 +841,7 @@ struct FetchCommand: AsyncParsableCommand {
         let crawler = await SampleCodeDownloader(
             outputDirectory: outputURL,
             maxSamples: limit,
-            forceDownload: force,
-            visibleBrowser: authenticate
+            forceDownload: force
         )
 
         let stats = try await crawler.download { progress in
@@ -650,3 +1018,5 @@ struct FetchCommand: AsyncParsableCommand {
         }
     }
 }
+
+// FetchURLsError lifted to Ingest.FetchURLsError (#247)

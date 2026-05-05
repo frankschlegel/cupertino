@@ -19,8 +19,7 @@ Specifies which documentation source to fetch. Each type targets a different dat
 | `docs` | Apple Developer Documentation (default) |
 | `swift` | Swift.org documentation |
 | `evolution` | Swift Evolution proposals |
-| `packages` | Swift package metadata |
-| `package-docs` | Swift package READMEs |
+| `packages` | Swift package metadata + GitHub source archives (#217 — see `--skip-metadata` / `--skip-archives`) |
 | `code` | Apple sample code (from Apple, requires auth) |
 | `samples` | Apple sample code (from GitHub, recommended) |
 | `archive` | Apple Archive legacy programming guides |
@@ -55,8 +54,7 @@ cupertino fetch --type all
 - [docs](type%20(=value)/docs.md) - Apple Developer Documentation
 - [swift](type%20(=value)/swift.md) - Swift.org documentation
 - [evolution](type%20(=value)/evolution.md) - Swift Evolution proposals
-- [packages](type%20(=value)/packages.md) - Swift package metadata
-- [package-docs](type%20(=value)/package-docs.md) - Swift package READMEs
+- [packages](type%20(=value)/packages.md) - Swift package metadata + source archives
 - [code](type%20(=value)/code.md) - Apple sample code (from Apple)
 - samples - Apple sample code (from GitHub)
 - [archive](type%20(=value)/archive.md) - Apple Archive legacy guides

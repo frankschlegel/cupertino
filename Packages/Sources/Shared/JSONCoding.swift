@@ -65,6 +65,10 @@ public enum JSONCoding {
             withIntermediateDirectories: true
         )
 
-        try data.write(to: url)
+        // Atomic write: writes to a temp file in the same directory and renames
+        // over `url`. Guarantees the on-disk file is always either the previous
+        // version or the new one, never half-written — so a kill mid-save can't
+        // leave metadata.json corrupt and make a multi-day crawl unresumable.
+        try data.write(to: url, options: .atomic)
     }
 }

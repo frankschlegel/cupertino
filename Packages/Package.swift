@@ -23,6 +23,10 @@ let macOSOnlyProducts: [Product] = [
     .singleTargetLibrary("Search"),
     .singleTargetLibrary("SampleIndex"),
     .singleTargetLibrary("Services"),
+    .singleTargetLibrary("Distribution"),
+    .singleTargetLibrary("Diagnostics"),
+    .singleTargetLibrary("Indexer"),
+    .singleTargetLibrary("Ingest"),
     .singleTargetLibrary("Resources"),
     .singleTargetLibrary("Availability"),
     .singleTargetLibrary("ASTIndexer"),
@@ -96,18 +100,26 @@ let targets: [Target] = {
         dependencies: ["Shared", "TestSupport"]
     )
 
+    // Resources target (#161): catalogs are now compiled in as Swift string
+    // literals under Sources/Resources/Embedded/ rather than shipped as a
+    // `Cupertino_Resources.bundle` next to the binary. No resources: [] entry
+    // needed — SPM just compiles the Swift files in the target directory.
     let resourcesTarget = Target.target(
-        name: "Resources",
-        resources: [.process("Resources")]
+        name: "Resources"
+    )
+    let resourcesTestsTarget = Target.testTarget(
+        name: "ResourcesTests",
+        dependencies: ["Resources"]
     )
 
     let coreTarget = Target.target(
         name: "Core",
-        dependencies: ["Shared", "Logging", "Resources"]
+        dependencies: ["Shared", "Logging", "Resources", "ASTIndexer"]
     )
     let coreTestsTarget = Target.testTarget(
         name: "CoreTests",
-        dependencies: ["Core", "Search", "TestSupport"]
+        dependencies: ["Core", "Search", "TestSupport"],
+        resources: [.copy("Resources/AppleJSON")]
     )
 
     let cleanupTarget = Target.target(
@@ -134,12 +146,13 @@ let targets: [Target] = {
     )
     let sampleIndexTestsTarget = Target.testTarget(
         name: "SampleIndexTests",
-        dependencies: ["SampleIndex", "TestSupport"]
+        dependencies: ["SampleIndex", "Shared", "TestSupport"]
     )
 
     let servicesTarget = Target.target(
         name: "Services",
-        dependencies: ["Shared", "Search", "SampleIndex"]
+        dependencies: ["Shared", "Search", "SampleIndex"],
+        exclude: ["README.md"]
     )
     let servicesTestsTarget = Target.testTarget(
         name: "ServicesTests",
@@ -205,6 +218,46 @@ let targets: [Target] = {
         dependencies: ["ASTIndexer", "Search", "SampleIndex", "TestSupport"]
     )
 
+    // ---------- Distribution (#246: SetupCommand lift) ----------
+    let distributionTarget = Target.target(
+        name: "Distribution",
+        dependencies: ["Shared", "Logging"]
+    )
+    let distributionTestsTarget = Target.testTarget(
+        name: "DistributionTests",
+        dependencies: ["Distribution", "Shared", "TestSupport"]
+    )
+
+    // ---------- Diagnostics (#245: DoctorCommand probe lift) ----------
+    let diagnosticsTarget = Target.target(
+        name: "Diagnostics",
+        dependencies: []
+    )
+    let diagnosticsTestsTarget = Target.testTarget(
+        name: "DiagnosticsTests",
+        dependencies: ["Diagnostics", "TestSupport"]
+    )
+
+    // ---------- Indexer (#244: SaveCommand indexer + preflight lift) ----------
+    let indexerTarget = Target.target(
+        name: "Indexer",
+        dependencies: ["Search", "SampleIndex", "Core", "Shared", "Logging"]
+    )
+    let indexerTestsTarget = Target.testTarget(
+        name: "IndexerTests",
+        dependencies: ["Indexer", "Shared", "TestSupport"]
+    )
+
+    // ---------- Ingest (#247: FetchCommand session + pipelines lift) ----------
+    let ingestTarget = Target.target(
+        name: "Ingest",
+        dependencies: ["Shared", "Logging"]
+    )
+    let ingestTestsTarget = Target.testTarget(
+        name: "IngestTests",
+        dependencies: ["Ingest", "Shared", "TestSupport"]
+    )
+
     let cliTarget = Target.executableTarget(
         name: "CLI",
         dependencies: [
@@ -214,6 +267,10 @@ let targets: [Target] = {
             "Search",
             "SampleIndex",
             "Services",
+            "Distribution",
+            "Diagnostics",
+            "Indexer",
+            "Ingest",
             "Logging",
             "RemoteSync",
             "Availability",
@@ -233,7 +290,8 @@ let targets: [Target] = {
             "Search",
             "Resources",
             "Logging",
-        ]
+        ],
+        exclude: ["Views/BOX_DRAWING_RULES.md"]
     )
 
     let mockAIAgentTarget = Target.executableTarget(
@@ -250,7 +308,8 @@ let targets: [Target] = {
         dependencies: [
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
             "Shared",
-        ]
+        ],
+        exclude: ["README.md"]
     )
     let releaseToolTestsTarget = Target.testTarget(
         name: "ReleaseToolTests",
@@ -271,31 +330,30 @@ let targets: [Target] = {
 
     let doctorTestsTarget = Target.testTarget(
         name: "DoctorTests",
-        dependencies: ["CLI", "MCP", "MCPSupport", "Search", "Shared", "TestSupport"],
+        dependencies: ["CLI", "Diagnostics", "MCP", "MCPSupport", "Search", "Shared", "TestSupport"],
         path: "Tests/CLICommandTests/DoctorTests"
     )
 
     let fetchTestsTarget = Target.testTarget(
         name: "FetchTests",
-        dependencies: ["CLI", "Core", "Shared", "TestSupport"],
+        dependencies: ["CLI", "Core", "Ingest", "Shared", "TestSupport"],
         path: "Tests/CLICommandTests/FetchTests"
     )
 
     let saveTestsTarget = Target.testTarget(
         name: "SaveTests",
-        dependencies: ["CLI", "Core", "Search", "Shared", "TestSupport"],
+        dependencies: ["CLI", "Core", "Indexer", "Search", "Shared", "TestSupport"],
         path: "Tests/CLICommandTests/SaveTests"
-    )
-
-    let setupTestsTarget = Target.testTarget(
-        name: "SetupTests",
-        dependencies: ["CLI", "Shared", "TestSupport"],
-        path: "Tests/CLICommandTests/SetupTests"
     )
 
     let tuiTestsTarget = Target.testTarget(
         name: "TUITests",
-        dependencies: ["TUI", "Core", "Shared", "TestSupport"]
+        dependencies: ["TUI", "Core", "Shared", "TestSupport"],
+        exclude: [
+            "TEST_SUMMARY.md",
+            "HOW_TESTS_DETECT_BUGS.md",
+            "TEST_COVERAGE_ANALYSIS.md",
+        ]
     )
     let cliTestsTarget = Target.testTarget(
         name: "CLITests",
@@ -303,7 +361,7 @@ let targets: [Target] = {
     )
     let mockAIAgentTestsTarget = Target.testTarget(
         name: "MockAIAgentTests",
-        dependencies: ["MCP", "TestSupport"]
+        dependencies: ["MCP", "SampleIndex", "Shared", "TestSupport"]
     )
 
     let cupertinoTargets: [Target] = [
@@ -312,6 +370,7 @@ let targets: [Target] = {
         sharedTarget,
         sharedTestsTarget,
         resourcesTarget,
+        resourcesTestsTarget,
         coreTarget,
         coreTestsTarget,
         cleanupTarget,
@@ -322,6 +381,14 @@ let targets: [Target] = {
         sampleIndexTestsTarget,
         servicesTarget,
         servicesTestsTarget,
+        distributionTarget,
+        distributionTestsTarget,
+        diagnosticsTarget,
+        diagnosticsTestsTarget,
+        indexerTarget,
+        indexerTestsTarget,
+        ingestTarget,
+        ingestTestsTarget,
         mcpSupportTarget,
         mcpSupportTestsTarget,
         searchToolProviderTarget,
@@ -345,7 +412,6 @@ let targets: [Target] = {
         doctorTestsTarget,
         fetchTestsTarget,
         saveTestsTarget,
-        setupTestsTarget,
         // CLI Tests
         cliTestsTarget,
         // MockAIAgent Tests

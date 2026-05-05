@@ -15,7 +15,7 @@
         "name": "mihaelamj",
         "url": "https://github.com/mihaelamj"
       },
-      "source": ".",
+      "source": "./",
       "category": "development",
       "homepage": "https://github.com/mihaelamj/cupertino"
     }

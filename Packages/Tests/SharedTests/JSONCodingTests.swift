@@ -1,3 +1,4 @@
+// swiftlint:disable type_body_length
 import Foundation
 @testable import Shared
 import Testing
@@ -38,7 +39,7 @@ struct JSONCodingTests {
 
         let encoder = JSONCoding.encoder()
         let data = try encoder.encode(model)
-        let jsonString = String(data: data, encoding: .utf8)!
+        let jsonString = try #require(String(data: data, encoding: .utf8))
 
         // ISO8601 format: YYYY-MM-DDTHH:MM:SSZ
         #expect(jsonString.contains("2023-11-14T22:13:20Z"), "Should use ISO8601 date format")
@@ -51,7 +52,7 @@ struct JSONCodingTests {
 
         let encoder = JSONCoding.prettyEncoder()
         let data = try encoder.encode(model)
-        let jsonString = String(data: data, encoding: .utf8)!
+        let jsonString = try #require(String(data: data, encoding: .utf8))
 
         // Check for pretty formatting
         #expect(jsonString.contains("\n"), "Should contain newlines")
@@ -64,11 +65,11 @@ struct JSONCodingTests {
 
         let encoder = JSONCoding.prettyEncoder()
         let data = try encoder.encode(model)
-        let jsonString = String(data: data, encoding: .utf8)!
+        let jsonString = try #require(String(data: data, encoding: .utf8))
 
         // Keys should appear in sorted order: name before value
-        let nameIndex = jsonString.range(of: "\"name\"")!.lowerBound
-        let valueIndex = jsonString.range(of: "\"value\"")!.lowerBound
+        let nameIndex = try #require(jsonString.range(of: "\"name\"")?.lowerBound)
+        let valueIndex = try #require(jsonString.range(of: "\"value\"")?.lowerBound)
         #expect(nameIndex < valueIndex, "Keys should be sorted alphabetically")
     }
 
@@ -121,7 +122,7 @@ struct JSONCodingTests {
         let model = ModelWithDate(name: "Test", createdAt: date, count: 42)
 
         let data = try JSONCoding.encode(model)
-        let jsonString = String(data: data, encoding: .utf8)!
+        let jsonString = try #require(String(data: data, encoding: .utf8))
 
         #expect(jsonString.contains("Test"))
         #expect(jsonString.contains("2023-11-14T22:13:20Z"))
@@ -133,7 +134,7 @@ struct JSONCodingTests {
         let model = ModelWithoutDate(name: "Test", value: 123)
 
         let data = try JSONCoding.encodePretty(model)
-        let jsonString = String(data: data, encoding: .utf8)!
+        let jsonString = try #require(String(data: data, encoding: .utf8))
 
         #expect(jsonString.contains("\n"), "Should be pretty-printed")
         #expect(jsonString.contains("Test"))
@@ -160,7 +161,7 @@ struct JSONCodingTests {
     // MARK: - File I/O Tests
 
     @Test("Encode to file creates directory and saves data")
-    func encodeToFileCreatesDirAndSaves() async throws {
+    func encodeToFileCreatesDirAndSaves() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("jsoncodingtest-\(UUID().uuidString)")
         let subdirPath = tempDir.appendingPathComponent("subdir")
@@ -184,7 +185,7 @@ struct JSONCodingTests {
 
         // Verify content
         let savedData = try Data(contentsOf: filePath)
-        let jsonString = String(data: savedData, encoding: .utf8)!
+        let jsonString = try #require(String(data: savedData, encoding: .utf8))
         #expect(jsonString.contains("Test"))
         #expect(jsonString.contains("2023-11-14T22:13:20Z"))
     }
@@ -339,8 +340,8 @@ struct JSONCodingTests {
         let decoded = try JSONCoding.decode([String: Date].self, from: data)
 
         #expect(decoded.count == 2)
-        #expect(abs(decoded["created"]!.timeIntervalSince1970 - 1700000000) < 1.0)
-        #expect(abs(decoded["modified"]!.timeIntervalSince1970 - 1700001000) < 1.0)
+        #expect(try abs(#require(decoded["created"]?.timeIntervalSince1970) - 1700000000) < 1.0)
+        #expect(try abs(#require(decoded["modified"]?.timeIntervalSince1970) - 1700001000) < 1.0)
     }
 
     // MARK: - Consistency Tests
@@ -419,5 +420,116 @@ struct JSONCodingTests {
         #expect(throws: (any Error).self) {
             _ = try JSONCoding.decode(ModelWithDate.self, from: nonExistentFile)
         }
+    }
+
+    // MARK: - Atomic Write Tests
+
+    //
+    // Regression test for the v1.0 atomic-write fix in `JSONCoding.encode(_:to:)`.
+    // A multi-day Apple-docs crawl saves `metadata.json` (often several MB) every
+    // 30s. Before the fix, that write went via `Data.write(to:)` without `.atomic`,
+    // so a kill mid-save could leave a half-written file → resume on next launch
+    // failed to decode → all queue/visited state lost. The fix passes `.atomic`,
+    // which writes to a sibling temp file and renames atomically, so any reader is
+    // guaranteed to see either the previous version or the new version.
+    //
+    // The torture below races a writer against many concurrent readers. With
+    // `.atomic`, every read must either decode successfully or trip a "no such
+    // file" error (briefly between iterations) — but never observe a corrupt /
+    // truncated file. Without `.atomic`, on a payload large enough to span
+    // multiple write syscalls, readers can catch a torn write and the decoder
+    // throws — that's the regression we're guarding against.
+
+    /// Big enough Codable payload that a non-atomic write would plausibly span
+    /// multiple syscalls and expose a torn-write window to a concurrent reader.
+    struct LargePayload: Codable, Equatable {
+        let version: Int
+        let entries: [Entry]
+
+        struct Entry: Codable, Equatable {
+            let id: String
+            let blob: String
+        }
+
+        static func make(version: Int, count: Int = 2000) -> LargePayload {
+            // ~64 chars * 2_000 entries ≈ 128 KB before pretty-printing —
+            // pretty + sortedKeys typically pushes the on-disk file past 256 KB,
+            // well beyond a single page-cache write.
+            let entries = (0..<count).map { idx in
+                Entry(
+                    id: "entry-\(version)-\(idx)",
+                    blob: String(repeating: "x", count: 64)
+                )
+            }
+            return LargePayload(version: version, entries: entries)
+        }
+    }
+
+    @Test("Concurrent writes are atomic — readers never see a torn file")
+    func concurrentWritesAreAtomic() async throws {
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atomic-torture-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        // Seed v0 so the first reader iteration always finds something.
+        try JSONCoding.encode(LargePayload.make(version: 0), to: tempFile)
+
+        let writeIterations = 200
+        let readerCount = 8
+
+        // Tracks corrupt reads — anything other than a clean decode or a
+        // benign "file vanished between stat and open" error is a bug.
+        actor CorruptionLog {
+            private(set) var torn: [String] = []
+            func record(_ description: String) {
+                torn.append(description)
+            }
+        }
+        let corruption = CorruptionLog()
+
+        await withTaskGroup(of: Void.self) { group in
+            // Writer: bumps `version` so each save has different content.
+            group.addTask {
+                for version in 1...writeIterations {
+                    do {
+                        try JSONCoding.encode(LargePayload.make(version: version), to: tempFile)
+                    } catch {
+                        await corruption.record("writer threw at v=\(version): \(error)")
+                        return
+                    }
+                }
+            }
+
+            // Readers: hammer the same file. Each successful decode must
+            // produce a fully-formed payload. Any decode error is a torn-write
+            // observation — that's the regression.
+            for readerID in 0..<readerCount {
+                group.addTask {
+                    for _ in 0..<(writeIterations * 2) {
+                        do {
+                            let loaded = try JSONCoding.decode(LargePayload.self, from: tempFile)
+                            // Sanity: payload made by `.make()` always has `count` entries.
+                            if loaded.entries.count != 2000 {
+                                await corruption.record(
+                                    "reader \(readerID) saw entries.count=\(loaded.entries.count)"
+                                )
+                            }
+                        } catch {
+                            // `Data(contentsOf:)` raises NSCocoaErrorDomain
+                            // 260 (fileNoSuchFileError) only if the file is
+                            // genuinely gone — `.atomic` rename never goes
+                            // through a "no file" state. Any error here is
+                            // suspect.
+                            await corruption.record(
+                                "reader \(readerID) decode failed: \(error)"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        let observed = await corruption.torn
+        #expect(observed.isEmpty, "atomic write contract violated: \(observed.prefix(3))")
     }
 }

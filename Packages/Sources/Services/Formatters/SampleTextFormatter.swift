@@ -81,7 +81,7 @@ public struct SampleListTextFormatter: ResultFormatter {
 
     public func format(_ projects: [SampleIndex.Project]) -> String {
         if projects.isEmpty {
-            return "No sample projects found. Run 'cupertino index' to build the sample index."
+            return "No sample projects found. Run 'cupertino save --samples' to build the sample index."
         }
 
         var output = "Sample Projects (\(projects.count) of \(totalCount) total):\n\n"

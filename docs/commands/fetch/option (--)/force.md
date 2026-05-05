@@ -34,7 +34,7 @@ cupertino fetch --type packages --force
 
 ### Force Re-download Sample Code
 ```bash
-cupertino fetch --type code --authenticate --force
+cupertino fetch --type code --force
 ```
 
 ### Force with Limit
@@ -53,5 +53,5 @@ cupertino fetch --type packages --force --limit 100
 
 - Overwrites existing files without confirmation
 - Can be slower than regular fetch
-- Cannot be combined with `--resume`
-- Resets checkpoint progress
+- Re-fetches every page; combine with `--start-clean` for a true ground-zero rerun
+- Resets per-page change-detection hashes

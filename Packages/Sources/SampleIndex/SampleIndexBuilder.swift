@@ -244,7 +244,11 @@ extension SampleIndex {
             // Calculate totals
             let totalSize = files.reduce(0) { $0 + $1.size }
 
-            // Create project record
+            // #228 phase 2: parse Package.swift platforms BEFORE indexProject
+            // so the projects-table row carries deployment targets directly.
+            let deploymentTargets = readPackageSwiftPlatforms(in: projectRoot)
+
+            // Create project record (with availability metadata populated)
             let project = Project(
                 id: projectId,
                 title: entry?.title ?? titleFromProjectId(projectId),
@@ -254,7 +258,9 @@ extension SampleIndex {
                 webURL: entry?.webURL ?? "",
                 zipFilename: zipFilename,
                 fileCount: files.count,
-                totalSize: totalSize
+                totalSize: totalSize,
+                deploymentTargets: deploymentTargets,
+                availabilitySource: deploymentTargets.isEmpty ? nil : "sample-swift"
             )
 
             // Index project
@@ -262,8 +268,39 @@ extension SampleIndex {
 
             // Index all files (with AST extraction for Swift files)
             let extractor = ASTIndexer.SwiftSourceExtractor()
+            // #228 phase 1: collect per-file `@available(...)` attribute
+            // occurrences while we're already walking the swift sources.
+            // Same shape as #219's per-package `availability.json`.
+            // Phase 2 also persists each file's attrs into samples.db.
+            var fileAvailability: [SampleAvailabilitySidecar.FileEntry] = []
+            let encoder = JSONEncoder()
             for file in files {
-                try await database.indexFile(file)
+                // Compute the per-file @available JSON before indexFile so
+                // it can be bound on the same INSERT.
+                var availableAttrsJSON: String?
+                if file.fileExtension == "swift" {
+                    let attrs = ASTIndexer.AvailabilityParsers
+                        .extractAvailability(from: file.content)
+                    if !attrs.isEmpty {
+                        if let data = try? encoder.encode(attrs) {
+                            availableAttrsJSON = String(data: data, encoding: .utf8)
+                        }
+                        fileAvailability.append(
+                            SampleAvailabilitySidecar.FileEntry(
+                                relpath: file.path,
+                                attributes: attrs
+                            )
+                        )
+                    }
+                }
+
+                let fileWithAvailability = File(
+                    projectId: file.projectId,
+                    path: file.path,
+                    content: file.content,
+                    availableAttrsJSON: availableAttrsJSON
+                )
+                try await database.indexFile(fileWithAvailability)
 
                 // Extract symbols from Swift files (#81)
                 if file.fileExtension == "swift" {
@@ -279,7 +316,59 @@ extension SampleIndex {
                 }
             }
 
+            // Sidecar is still written for offline/inspection use even
+            // though the same data lives in samples.db now. Cheap, and
+            // gives users a per-sample readable artifact next to the zip.
+            try writeAvailabilitySidecar(
+                nextTo: zipURL,
+                projectId: projectId,
+                deploymentTargets: deploymentTargets,
+                fileAvailability: fileAvailability
+            )
+
             return files.count
+        }
+
+        // MARK: - Availability sidecar (#228 phase 1)
+
+        private func readPackageSwiftPlatforms(in projectRoot: URL) -> [String: String] {
+            let url = projectRoot.appendingPathComponent("Package.swift")
+            guard let manifest = try? String(contentsOf: url, encoding: .utf8) else {
+                return [:]
+            }
+            return ASTIndexer.AvailabilityParsers.parsePlatforms(from: manifest)
+        }
+
+        /// Write `<projectId>.availability.json` next to the zip in
+        /// `~/.cupertino/sample-code/`. Idempotent; identical content
+        /// re-writes the same bytes (sorted keys, ISO-8601 dates).
+        private func writeAvailabilitySidecar(
+            nextTo zipURL: URL,
+            projectId: String,
+            deploymentTargets: [String: String],
+            fileAvailability: [SampleAvailabilitySidecar.FileEntry]
+        ) throws {
+            let sortedFiles = fileAvailability.sorted { $0.relpath < $1.relpath }
+            let totalAttrs = sortedFiles.reduce(0) { $0 + $1.attributes.count }
+            let sidecar = SampleAvailabilitySidecar(
+                version: "1.0",
+                annotatedAt: Date(),
+                projectId: projectId,
+                deploymentTargets: deploymentTargets,
+                fileAvailability: sortedFiles,
+                stats: .init(
+                    filesWithAvailability: sortedFiles.count,
+                    totalAttributes: totalAttrs
+                )
+            )
+
+            let outputURL = zipURL.deletingLastPathComponent()
+                .appendingPathComponent("\(projectId).availability.json")
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(sidecar)
+            try data.write(to: outputURL, options: [.atomic])
         }
 
         // MARK: - Extract Project

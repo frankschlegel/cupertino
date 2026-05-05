@@ -12,6 +12,8 @@ A Swift-based tool to crawl, index, and serve Apple's developer documentation to
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-blue)](https://www.pulsemcp.com/servers/mihaelamj-cupertino)
 [![LobeHub](https://img.shields.io/badge/LobeHub-listed-purple)](https://lobehub.com/mcp/mihaelamj-cupertino)
 
+> **🗺️ Roadmap:** [#183 — bugs → recrawl → vector → tutor](https://github.com/mihaelamj/cupertino/issues/183) · [milestone progress](https://github.com/mihaelamj/cupertino/milestone/1)
+
 ![Cupertino Demo](docs/images/cupertino.gif)
 
 ## What is Cupertino?
@@ -21,7 +23,7 @@ Cupertino is a local, structured, AI-ready documentation system for Apple platfo
 - **Crawls** Apple Developer documentation, Swift.org, Swift Evolution proposals, Human Interface Guidelines, Apple Archive legacy guides, and Swift package metadata
 - **Indexes** everything into a fast, searchable SQLite FTS5 database with field-weighted BM25 (BM25F) ranking and AST-extracted symbol columns
 - **Serves** documentation to AI agents like Claude via the Model Context Protocol
-- **Provides** offline access to 302,424+ documentation pages across 307 frameworks
+- **Provides** offline access to 405,000+ documentation pages across 422 frameworks
 
 ### Why Build This?
 
@@ -38,7 +40,7 @@ Cupertino is a local, structured, AI-ready documentation system for Apple platfo
 ### Requirements
 
 - macOS 15+ (Sequoia)
-- ~2-3 GB disk space for full documentation
+- ~5 GB disk space for the full v1.0 bundle (search.db ~3.4 GB, packages.db ~990 MB, samples.db ~185 MB; ~833 MB compressed for download)
 
 *Building from source additionally requires Swift 6.2+ and Xcode 16.0+*
 
@@ -92,8 +94,7 @@ cupertino save --remote              # Stream and build locally
 cupertino fetch --type docs          # Apple Developer Documentation
 cupertino fetch --type swift         # Swift.org documentation
 cupertino fetch --type evolution     # Swift Evolution proposals
-cupertino fetch --type packages      # Swift package metadata
-cupertino fetch --type package-docs  # Swift package READMEs
+cupertino fetch --type packages      # Swift package metadata + GitHub archives
 cupertino fetch --type code          # Sample code from Apple (requires auth)
 cupertino fetch --type samples       # Sample code from GitHub (recommended)
 cupertino fetch --type archive       # Apple Archive programming guides
@@ -104,7 +105,7 @@ cupertino fetch --type all           # All types in parallel
 # Build indexes
 cupertino save                       # Build documentation search index (from local files)
 cupertino save --remote              # Build from GitHub (no local files needed)
-cupertino index                      # Index sample code for search
+cupertino save --samples                      # Index sample code for search
 
 # Start server
 cupertino                            # Start MCP server (default command)
@@ -136,7 +137,7 @@ cupertino serve
 
 ```bash
 # Download Apple documentation (~12+ days for 301,000+ pages)
-# Takes time due to 0.5s default delay between requests to respect Apple's servers
+# Takes time due to 0.05s default delay between requests
 cupertino fetch --type docs --max-pages 15000
 
 # Download Swift Evolution proposals (~2-5 minutes)
@@ -332,9 +333,9 @@ npx openskills install mihaelamj/cupertino --universal
 
 **Option B: Install as a Claude Code Plugin**
 
-Add the cupertino marketplace to Claude Code:
-```bash
-claude /plugin marketplace add https://github.com/mihaelamj/cupertino.git
+Inside a Claude Code session, add the cupertino marketplace:
+```
+/plugin marketplace add mihaelamj/cupertino
 ```
 
 Then enable the plugin from the marketplace.
@@ -426,7 +427,7 @@ A UIKit view controller that manages a SwiftUI view hierarchy.
 | Accelerate | 9,114 |
 | SwiftUI | 7,062 |
 | ... | ... |
-| **307 Frameworks** | **302,424** |
+| **422 Frameworks** | **405,782** |
 
 ## Core Features
 
@@ -496,7 +497,7 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
   - Platform availability filtering (iOS/macOS version)
   - Snippet generation
   - Sub-100ms query performance
-- **Size**: ~2.4GB index for full documentation (302,000+ documents across 307 frameworks)
+- **Size**: ~3.4 GB search.db + ~990 MB packages.db + ~185 MB samples.db for full documentation (405,000+ documents across 422 frameworks)
 - **Storage**: Database must be on local filesystem - SQLite does not work reliably on network drives (NFS/SMB)
 
 ### 4. Model Context Protocol Server
@@ -516,7 +517,7 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
       - Parameters: `uri` (required), `format` (optional: `json` or `markdown`, default: `json`)
       - JSON format returns the full structured document data (recommended for AI)
       - Markdown format returns rendered content for human reading
-  - **Sample Code Tools** (requires `cupertino index`):
+  - **Sample Code Tools** (requires `cupertino save --samples`):
     - `search_samples` - Search sample code projects and files
     - `list_samples` - List all indexed sample projects
     - `read_sample` - Read sample project README and metadata
@@ -526,7 +527,7 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
 
 - **Resumable**: Continue interrupted crawls from saved state
 - **Change Detection**: Skip unchanged pages on updates
-- **Respectful**: 0.5s default delay between requests (configurable)
+- **Respectful**: 0.05s default delay between requests (configurable)
 - **Deduplication**: Automatic URL queue management
 - **Priority Queues**: Important content fetched first
 
@@ -542,7 +543,7 @@ These catalogs are indexed during `cupertino save` and enable instant search wit
 | `cupertino search` | Search documentation from CLI |
 | `cupertino read` | Read full document by URI |
 | `cupertino doctor` | Check server health |
-| `cupertino index` | Index sample code for search |
+| `cupertino save --samples` | Index sample code for search |
 | `cupertino cleanup` | Clean up sample code archives |
 
 See [docs/commands/](docs/commands/) for detailed usage and options.
@@ -664,8 +665,8 @@ log stream --predicate 'subsystem == "com.cupertino"'
 
 ### Why Crawling Takes 12+ Days
 
-The crawler respects Apple's servers with a **0.5 second default delay between each request** (configurable):
-- 301,000 pages × 0.5s = 150,500 seconds (~42 hours minimum)
+The crawler uses a **0.05 second default delay between each request** (configurable):
+- 301,000 pages × 0.05s = ~4.2 hours minimum
 - Plus page rendering, parsing, and saving time
 - Crawl must reach depth 21+ to get all documentation
 - **Total: ~12+ days for initial full crawl**
@@ -745,7 +746,7 @@ For development setup, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Project Status
 
-**Version:** 0.10.0
+**Version:** 1.0.0 "First Light"
 **Status:** 🚧 Active Development
 
 - ✅ All core functionality working

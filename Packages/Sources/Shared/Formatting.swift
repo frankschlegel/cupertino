@@ -7,14 +7,27 @@ extension Shared {
     public enum Formatting {
         // MARK: - Byte Formatting
 
-        /// Format bytes to human-readable string (e.g., "1.5 MB", "2.3 GB")
-        /// Uses ByteCountFormatter for consistent, localized output
+        /// Format bytes to human-readable string (e.g., "1.5 MB", "2.3 GB").
+        /// Uses `String(format:)` so the decimal separator is always `.`,
+        /// independent of the user's system locale. Avoids ByteCountFormatter's
+        /// locale-driven decimal mark which produces output like "2,62 GB" on
+        /// European locales. Matches the `.file` count style: 1000-based units.
         /// - Parameter bytes: The number of bytes to format
         /// - Returns: Human-readable string representation
         public static func formatBytes(_ bytes: Int64) -> String {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            return formatter.string(fromByteCount: bytes)
+            let absValue = Double(bytes < 0 ? -bytes : bytes)
+            let signed = Double(bytes)
+            let kilo: Double = 1000
+            let mega = kilo * 1000
+            let giga = mega * 1000
+            let tera = giga * 1000
+            switch absValue {
+            case tera...: return String(format: "%.2f TB", signed / tera)
+            case giga...: return String(format: "%.2f GB", signed / giga)
+            case mega...: return String(format: "%.1f MB", signed / mega)
+            case kilo...: return String(format: "%.0f KB", signed / kilo)
+            default: return "\(bytes) bytes"
+            }
         }
 
         /// Format bytes to human-readable string (Int version)

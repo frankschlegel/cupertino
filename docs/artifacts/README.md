@@ -23,7 +23,7 @@ All Cupertino artifacts are stored under:
 | [archive/](folders/archive/) | Apple Archive programming guides | [README](folders/archive/) |
 | [hig/](folders/hig/) | Human Interface Guidelines | [README](folders/hig/) |
 | [sample-code/](folders/sample-code/) | Apple sample code ZIP files | [README](folders/sample-code/) + [.auth-cookies.json](folders/sample-code/.auth-cookies.json.md) |
-| [packages/](folders/packages/) | Swift package metadata | [README](folders/packages/) + [swift-packages-with-stars.json](folders/packages/swift-packages-with-stars.json.md) + [checkpoint.json](folders/packages/checkpoint.json.md) |
+| [packages/](folders/packages/) | Swift package metadata + extracted source archives | [README](folders/packages/) + [swift-packages-with-stars.json](folders/packages/swift-packages-with-stars.json.md) + [checkpoint.json](folders/packages/checkpoint.json.md) + per-package `<owner>/<repo>/` source trees |
 | [search.db](folders/search.db.md) | FTS5 search index for documentation | File documentation |
 | [samples.db](folders/samples.db.md) | FTS5 search index for sample code | File documentation |
 | [config.json](folders/config.json.md) | Application configuration | File documentation |
@@ -82,7 +82,7 @@ All Cupertino artifacts are stored under:
 | `cupertino fetch --type packages` | Package data + checkpoint | `~/.cupertino/packages/` |
 | `cupertino fetch --type availability` | Updates JSON with availability | `~/.cupertino/docs/*.json` |
 | `cupertino save` | Documentation search database | `~/.cupertino/search.db` |
-| `cupertino index` | Sample code search database | `~/.cupertino/samples.db` |
+| `cupertino save --samples` | Sample code search database | `~/.cupertino/samples.db` |
 
 ## Customizing Locations
 

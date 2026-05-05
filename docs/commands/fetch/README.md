@@ -24,12 +24,12 @@ The `fetch` command is the unified fetching command that handles both web crawli
   - `docs` - Apple Developer Documentation (web crawl)
   - `swift` - Swift.org Documentation (web crawl)
   - `evolution` - Swift Evolution Proposals (web crawl)
-  - `packages` - Swift Package Index metadata (direct download)
-  - `package-docs` - Swift Package READMEs (direct download)
+  - `packages` - Swift Package Index metadata + GitHub source archives ([#217](https://github.com/mihaelamj/cupertino/issues/217) — see `--skip-metadata` / `--skip-archives`)
   - `code` - Apple Sample Code (direct download from Apple, requires auth)
   - `samples` - Apple Sample Code (git clone from GitHub, recommended)
   - `archive` - Apple Archive guides (legacy programming guides)
   - `hig` - Human Interface Guidelines (web crawl)
+  - `availability` - API version info for existing docs (annotates already-crawled pages)
   - `all` - All types in parallel
 
 ### Web Crawl Options
@@ -39,14 +39,23 @@ The `fetch` command is the unified fetching command that handles both web crawli
 - `--max-depth` - Maximum crawl depth (default: 15)
 - `--allowed-prefixes` - Comma-separated URL prefixes to allow (auto-detected if not specified)
 - [--force](force.md) - Force recrawl of all pages (ignore change detection)
-- [--resume](resume.md) - Resume from saved session (auto-detects and continues)
-- `--only-accepted` - Only download accepted/implemented proposals (evolution type only)
+- [--start-clean](start-clean.md) - Ignore any saved session and start fresh from the seed URL
+- `--retry-errors` - Re-queue URLs that errored before save (visited but missing from the pages dict). Use after a filename or save bug is fixed to retry the affected pages without re-crawling the whole corpus.
+- `--baseline <path>` - Path to a known-good baseline corpus directory (e.g. a prior `cupertino-docs/docs` snapshot). On startup, URLs present in the baseline but missing from the current crawl's known set are prepended to the queue so the resumed crawl recovers gaps without a full recrawl. Path comparison is case-insensitive.
+- `--urls <path>` - Path to a text file containing one URL per line. Each URL is enqueued at depth 0; the crawler follows links from each up to `--max-depth`. Set `--max-depth 0` to fetch only the listed URLs with no descent. Useful for fetching a fixed list of URLs another corpus has but this one is missing, without re-spidering. Lines starting with `#` and blank lines are ignored. ([#210](https://github.com/mihaelamj/cupertino/issues/210))
+- `--discovery-mode <mode>` - Discovery mode for the docs crawler. Values: `auto` (default; JSON API primary, WKWebView fallback when JSON returns 404), `json-only` (JSON API only, no fallback. Fastest, narrowest), `webview-only` (WKWebView for everything. Slowest, broadest discovery, matches pre-2025-11-30 behavior). ([#208](https://github.com/mihaelamj/cupertino/issues/208))
+- `--only-accepted` / `--no-only-accepted` - Only download accepted/implemented proposals (evolution type only). On by default; use `--no-only-accepted` to include drafts and rejected proposals.
+
+> **Resume is automatic.** If a previous `fetch` was interrupted, just re-run the same command — the crawler picks up its `metadata.json` and continues from where it left off. No flag needed. Use `--start-clean` to override and start over.
 
 ### Direct Fetch Options
 
 - [--output-dir](output-dir.md) - Output directory for downloaded resources
 - [--limit](limit.md) - Maximum number of items to fetch (packages/code types only)
-- [--authenticate](authenticate.md) - Launch visible browser for authentication (code type only)
+- `--skip-metadata` - Skip the metadata-refresh stage of `--type packages` ([#217](https://github.com/mihaelamj/cupertino/issues/217))
+- `--skip-archives` - Skip the archive-download stage of `--type packages` ([#217](https://github.com/mihaelamj/cupertino/issues/217))
+- `--annotate-availability` - Opt-in stage 3: walk the on-disk packages corpus and write per-package `availability.json` (deployment targets + `@available` attrs) ([#219](https://github.com/mihaelamj/cupertino/issues/219))
+- `--fast` - Use higher concurrency and shorter timeouts for `--type availability` (faster but more aggressive)
 
 ## Examples
 
@@ -79,10 +88,13 @@ cupertino fetch --type samples
 # 606 projects, ~10GB with Git LFS, ~4 minutes
 ```
 
-### Fetch Apple Sample Code from Apple (with Authentication)
+### Fetch Apple Sample Code from Apple
+
 ```bash
-cupertino fetch --type code --authenticate
-# Slower, requires Apple ID login
+cupertino fetch --type code
+# Reuses Apple Developer cookies from your Safari session.
+# Sign in to https://developer.apple.com/ via Safari first; the
+# fetcher detects the `myacinfo` cookie automatically.
 ```
 
 ### Fetch Apple Archive Guides (Legacy Documentation)
@@ -104,12 +116,19 @@ cupertino fetch --start-url https://developer.apple.com/documentation/swiftui \
                 --output-dir ./my-docs
 ```
 
-### Resume Interrupted Crawl
+### Resume Interrupted Crawl (automatic)
 ```bash
-cupertino fetch --type docs --resume
+# Just re-run the same command — fetch auto-resumes from metadata.json
+cupertino fetch --type docs
 ```
 
-### Force Recrawl
+### Force a Truly Fresh Start
+```bash
+# Clear the saved session AND re-fetch every page
+cupertino fetch --type docs --start-clean --force
+```
+
+### Force Recrawl Without Resetting the Queue
 ```bash
 cupertino fetch --type docs --force
 ```
@@ -154,10 +173,10 @@ Web crawl types use content hashing to detect changes:
 
 ### Session Resume
 
-All types support resuming interrupted operations:
-- **Web crawls**: Saves session state every 100 pages
-- **Direct fetches**: Checkpoints after each item
-- Use `--resume` flag to continue from last checkpoint
+All types resume interrupted operations automatically — just re-run the same command:
+- **Web crawls**: `metadata.json` is saved every 30 seconds with the queue + visited set, written atomically (`.atomic`) so a kill mid-save can never corrupt it.
+- **Direct fetches**: `checkpoint.json` is updated after each item.
+- Use `--start-clean` to override auto-resume and start fresh from the seed URL.
 
 ### Parallel Fetching
 
@@ -177,11 +196,12 @@ cupertino fetch --type all
 
 ### Authentication
 
-**Sample Code (`--type code`)** requires Apple ID authentication:
-- Use `--authenticate` to launch visible browser
-- Sign in with your Apple Developer account
-- Cookies are saved for future runs
-- No authentication needed for docs, swift, evolution, or packages
+**Sample Code (`--type code`)** requires Apple ID authentication, but the in-process auth window is currently broken (#6 partial; full replacement #193). The supported path is:
+
+- Sign in to `https://developer.apple.com/` in Safari
+- Run `cupertino fetch --type code` (no extra flags)
+- The fetcher reuses Safari's `myacinfo` cookie from the system cookie store
+- No authentication is needed for `docs`, `swift`, `evolution`, `packages`, `samples` (GitHub mirror), `archive`, `hig`, `availability`
 
 ### GitHub Token (Optional)
 

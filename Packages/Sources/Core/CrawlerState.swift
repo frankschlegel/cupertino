@@ -18,10 +18,21 @@ public actor CrawlerState {
         // Load existing metadata if available
         if FileManager.default.fileExists(atPath: configuration.metadataFile.path) {
             do {
-                let loadedMetadata = try CrawlMetadata.load(from: configuration.metadataFile)
+                var loadedMetadata = try CrawlMetadata.load(from: configuration.metadataFile)
 
                 // Validate metadata by checking if files actually exist
                 if Self.validateMetadata(loadedMetadata, metadataFile: configuration.metadataFile) {
+                    // Cross-machine portability: PageMetadata.filePath is an
+                    // absolute string captured on the writing host. After rsync
+                    // to a machine with a different home dir, those strings
+                    // point at nothing — SearchIndexBuilder + DocsResourceProvider
+                    // would silently fail to read each page, and our own
+                    // validateMetadata would have already wiped crawlState.
+                    // Rebase on load so all downstream consumers see paths
+                    // under the *current* outputDir.
+                    let outputDir = configuration.metadataFile.deletingLastPathComponent()
+                    Self.rebasePagePaths(in: &loadedMetadata, to: outputDir)
+
                     metadata = loadedMetadata
                     Logging.Logger.crawler.info("✅ Loaded existing metadata: \(metadata.pages.count) pages")
                 } else {
@@ -33,8 +44,13 @@ public actor CrawlerState {
         }
     }
 
-    /// Validate that metadata matches reality by spot-checking file existence
-    private static func validateMetadata(_ metadata: CrawlMetadata, metadataFile: URL) -> Bool {
+    /// Validate that metadata matches reality by spot-checking file existence.
+    /// File existence is checked at the *expected* path under the metadata
+    /// file's parent directory (`outputDir / framework / filename`), not at
+    /// the absolute path stored in `page.filePath` — that string was captured
+    /// on the writing host and may point under the wrong home directory after
+    /// the metadata has been rsynced between machines.
+    static func validateMetadata(_ metadata: CrawlMetadata, metadataFile: URL) -> Bool {
         // If metadata claims many pages, verify some actually exist
         guard !metadata.pages.isEmpty else { return true }
 
@@ -52,7 +68,12 @@ public actor CrawlerState {
         for sampleIdx in 0..<samplesToCheck {
             let index = sampleIdx * pagesList.count / samplesToCheck
             let page = pagesList[index]
-            if FileManager.default.fileExists(atPath: page.filePath) {
+            // Try the portable canonical path first (rsync-friendly); fall
+            // back to the saved absolute path so existing layouts and tests
+            // that don't follow framework/file canonicalisation still validate.
+            let portable = Self.expectedFilePath(for: page, under: outputDir)
+            if FileManager.default.fileExists(atPath: portable)
+                || FileManager.default.fileExists(atPath: page.filePath) {
                 existingCount += 1
             }
         }
@@ -65,6 +86,45 @@ public actor CrawlerState {
         }
 
         return true
+    }
+
+    /// Compute the expected on-disk path for `page` relative to `outputDir`.
+    /// Uses `framework` + the basename of the saved `filePath`, so the result
+    /// only depends on data captured *within* the metadata, never on the
+    /// absolute prefix the writing host happened to use.
+    static func expectedFilePath(for page: PageMetadata, under outputDir: URL) -> String {
+        let filename = (page.filePath as NSString).lastPathComponent
+        return outputDir
+            .appendingPathComponent(page.framework)
+            .appendingPathComponent(filename)
+            .path
+    }
+
+    /// Rewrite each page's `filePath` to live under `outputDir` *if and only
+    /// if* the saved path no longer points at an existing file. This catches
+    /// the rsync-from-another-host case (saved absolute path is foreign,
+    /// portable canonical path resolves locally) without disturbing layouts
+    /// where the saved path is still valid (e.g. tests with non-canonical
+    /// fixture paths, or runs against custom output directories).
+    /// Idempotent.
+    static func rebasePagePaths(in metadata: inout CrawlMetadata, to outputDir: URL) {
+        for (url, page) in metadata.pages {
+            // Saved path still resolves → leave it alone.
+            if FileManager.default.fileExists(atPath: page.filePath) {
+                continue
+            }
+            let expected = Self.expectedFilePath(for: page, under: outputDir)
+            if expected != page.filePath {
+                metadata.pages[url] = PageMetadata(
+                    url: page.url,
+                    framework: page.framework,
+                    filePath: expected,
+                    contentHash: page.contentHash,
+                    depth: page.depth,
+                    lastCrawled: page.lastCrawled
+                )
+            }
+        }
     }
 
     // MARK: - Change Detection

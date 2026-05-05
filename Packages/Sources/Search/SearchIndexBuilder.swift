@@ -213,7 +213,7 @@ extension Search {
             logInfo("📂 Scanning directory for documentation (no metadata.json)...")
 
             // Recursively find all .json and .md files (JSON preferred over MD)
-            let docFiles = try findDocFiles(in: docsDirectory)
+            let docFiles = try Self.findDocFiles(in: docsDirectory)
 
             guard !docFiles.isEmpty else {
                 logInfo("⚠️  No documentation files found in \(docsDirectory.path)")
@@ -291,12 +291,18 @@ extension Search {
                         jsonData: jsonString
                     )
 
-                    // Index code examples if present
+                    // Index code examples if present (#192 D: also extract AST
+                    // symbols into doc_symbols / doc_imports and the
+                    // denormalised docs_metadata.symbols blob).
                     if !structuredPage.codeExamples.isEmpty {
                         let examples = structuredPage.codeExamples.map {
                             (code: $0.code, language: $0.language ?? "swift")
                         }
                         try await searchIndex.indexCodeExamples(
+                            docUri: uri,
+                            codeExamples: examples
+                        )
+                        try await searchIndex.extractCodeExampleSymbols(
                             docUri: uri,
                             codeExamples: examples
                         )
@@ -317,7 +323,9 @@ extension Search {
             logInfo("   Directory scan: \(indexed) indexed, \(skipped) skipped")
         }
 
-        private func findDocFiles(in directory: URL) throws -> [URL] {
+        /// Pure filesystem scan. Static so tests can exercise the crawl-manifest
+        /// filter (fix for #110) without spinning up the full actor.
+        static func findDocFiles(in directory: URL) throws -> [URL] {
             var jsonFiles: Set<String> = [] // Track JSON filenames to skip duplicate MDs
             var docFiles: [URL] = []
 
@@ -336,6 +344,15 @@ extension Search {
                 let ext = fileURL.pathExtension.lowercased()
                 guard ext == "json" || ext == "md" else { continue }
 
+                // Skip crawl-manifest files (fix for #110): `metadata.json` sits inside
+                // source roots (e.g. ~/.cupertino/swift-org/metadata.json) but is not a
+                // documentation page, and lacks the `url` key required by
+                // StructuredDocumentationPage. Treating it as a doc produces a
+                // keyNotFound decode error and a skipped-file count that confuses users.
+                if fileURL.lastPathComponent == "metadata.json" {
+                    continue
+                }
+
                 // Use FileManager to check if it's a file (more reliable than resourceValues)
                 var isDirectory: ObjCBool = false
                 if FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory),
@@ -344,19 +361,21 @@ extension Search {
                 }
             }
 
-            // Second pass: prefer JSON over MD for same filename
-            for file in allFiles {
+            // Second pass: prefer JSON over MD for same filename.
+            // Process JSONs first so `jsonFiles` is fully populated before MDs are
+            // considered; FileManager.enumerator ordering is not guaranteed, which
+            // previously allowed MDs to slip through when they came first.
+            for file in allFiles where file.pathExtension.lowercased() == "json" {
                 let basename = file.deletingPathExtension().lastPathComponent
                 let dir = file.deletingLastPathComponent().path
-
-                if file.pathExtension.lowercased() == "json" {
-                    jsonFiles.insert("\(dir)/\(basename)")
+                jsonFiles.insert("\(dir)/\(basename)")
+                docFiles.append(file)
+            }
+            for file in allFiles where file.pathExtension.lowercased() == "md" {
+                let basename = file.deletingPathExtension().lastPathComponent
+                let dir = file.deletingLastPathComponent().path
+                if !jsonFiles.contains("\(dir)/\(basename)") {
                     docFiles.append(file)
-                } else if file.pathExtension.lowercased() == "md" {
-                    // Only add MD if no JSON exists for same basename
-                    if !jsonFiles.contains("\(dir)/\(basename)") {
-                        docFiles.append(file)
-                    }
                 }
             }
 
@@ -457,7 +476,7 @@ extension Search {
             logInfo("   Swift Evolution: \(indexed) indexed, \(skipped) skipped")
         }
 
-        private func getProposalFiles(from directory: URL) throws -> [URL] {
+        func getProposalFiles(from directory: URL) throws -> [URL] {
             let files = try FileManager.default.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.contentModificationDateKey],
@@ -466,7 +485,8 @@ extension Search {
 
             return files.filter {
                 $0.pathExtension == "md" &&
-                    $0.lastPathComponent.hasPrefix("SE-")
+                    ($0.lastPathComponent.hasPrefix(Shared.Constants.Search.sePrefix) ||
+                        $0.lastPathComponent.hasPrefix(Shared.Constants.Search.stPrefix))
             }
         }
 
@@ -562,7 +582,7 @@ extension Search {
         }
 
         /// Extract status from Swift Evolution proposal markdown
-        private func extractProposalStatus(from markdown: String) -> String? {
+        func extractProposalStatus(from markdown: String) -> String? {
             // Format: "* Status: **Implemented (Swift 2.2)**" or "* Status: **Accepted**"
             guard let regex = try? NSRegularExpression(pattern: Shared.Constants.Pattern.seStatus),
                   let match = regex.firstMatch(
@@ -578,7 +598,7 @@ extension Search {
         }
 
         /// Check if proposal status indicates it was accepted/implemented
-        private func isAcceptedProposal(_ status: String?) -> Bool {
+        func isAcceptedProposal(_ status: String?) -> Bool {
             guard let status = status?.lowercased() else {
                 return false
             }
@@ -586,19 +606,30 @@ extension Search {
             return status.contains("implemented") || status.contains("accepted")
         }
 
-        /// Check if a page is a 404 error page
-        private func is404Page(title: String, content: String) -> Bool {
-            // Check title
-            if title.lowercased() == "not found" {
+        /// Check if a page is a 404 error page. Pure; exposed `static` for direct unit testing.
+        ///
+        /// Heuristic (fix for #110):
+        /// - Strong title signals (exact "not found" or contains "404") → 404.
+        /// - Unambiguous content phrases ("the requested url was not found", "404 not found") → 404.
+        /// - The weaker phrase "page not found" only flips the verdict on short pages
+        ///   (< 500 chars), because real documentation can discuss that phrase in prose
+        ///   about error handling. Swift Book's "The Basics" pages were being misflagged.
+        static func is404Page(title: String, content: String) -> Bool {
+            let lowerTitle = title.lowercased()
+            if lowerTitle == "not found" || lowerTitle.contains("404") {
                 return true
             }
-            // Check content for common 404 indicators
+
             let lowerContent = content.lowercased()
             if lowerContent.contains("the requested url was not found") ||
-                lowerContent.contains("404 not found") ||
-                lowerContent.contains("page not found") {
+                lowerContent.contains("404 not found") {
                 return true
             }
+
+            if content.count < 500, lowerContent.contains("page not found") {
+                return true
+            }
+
             return false
         }
 
@@ -615,7 +646,7 @@ extension Search {
             }
 
             // Use findDocFiles to handle both .json and .md files (same as Apple docs)
-            let docFiles = try findDocFiles(in: swiftOrgDirectory)
+            let docFiles = try Self.findDocFiles(in: swiftOrgDirectory)
 
             guard !docFiles.isEmpty else {
                 logInfo("⚠️  No Swift.org documentation found")
@@ -678,7 +709,7 @@ extension Search {
                 // Skip 404/error pages
                 let title = structuredPage.title
                 let content = structuredPage.rawMarkdown ?? structuredPage.overview ?? ""
-                if is404Page(title: title, content: content) {
+                if Self.is404Page(title: title, content: content) {
                     skipped += 1
                     continue
                 }
@@ -705,12 +736,18 @@ extension Search {
                         overrideAvailabilitySource: isSwiftBook ? "universal" : nil
                     )
 
-                    // Index code examples if present
+                    // Index code examples if present (#192 D: also extract AST
+                    // symbols into doc_symbols / doc_imports and the
+                    // denormalised docs_metadata.symbols blob).
                     if !structuredPage.codeExamples.isEmpty {
                         let examples = structuredPage.codeExamples.map {
                             (code: $0.code, language: $0.language ?? "swift")
                         }
                         try await searchIndex.indexCodeExamples(
+                            docUri: uri,
+                            codeExamples: examples
+                        )
+                        try await searchIndex.extractCodeExampleSymbols(
                             docUri: uri,
                             codeExamples: examples
                         )
@@ -1002,8 +1039,8 @@ extension Search {
         }
 
         private func extractProposalID(from filename: String) -> String? {
-            // Extract SE-NNNN from filenames like "SE-0001-optional-binding.md"
-            if let regex = try? NSRegularExpression(pattern: Shared.Constants.Pattern.seReference, options: []),
+            // Extract SE-NNNN or ST-NNNN from filenames like "SE-0001-optional-binding.md" or "ST-0001-foo.md"
+            if let regex = try? NSRegularExpression(pattern: Shared.Constants.Pattern.evolutionReference, options: []),
                let match = regex.firstMatch(in: filename, range: NSRange(filename.startIndex..., in: filename)),
                let range = Range(match.range(at: 1), in: filename) {
                 return String(filename[range])
@@ -1012,12 +1049,26 @@ extension Search {
         }
 
         private func indexSampleCodeCatalog(onProgress: (@Sendable (Int, Int) -> Void)?) async throws {
-            logInfo("📦 Indexing sample code catalog from bundled resources...")
-
+            // Sample-code catalog now lives ONLY on disk
+            // (<sample-code-dir>/catalog.json, written by
+            // `cupertino fetch --type code`). The previous embedded fallback
+            // was deleted in #215 — auto-discovery is the source of truth.
             let entries = await SampleCodeCatalog.allEntries
+            let source = await SampleCodeCatalog.loadedSource ?? .missing
+            switch source {
+            case .onDisk:
+                logInfo("📦 Indexing sample code catalog from on-disk catalog.json (#214)...")
+            case .missing:
+                let path = Shared.Constants.defaultSampleCodeDirectory
+                    .appendingPathComponent(SampleCodeCatalog.onDiskCatalogFilename)
+                    .path
+                logInfo("⚠️  No sample-code catalog at \(path) — skipping sample-code indexing.")
+                logInfo("    Run `cupertino fetch --type code` to populate the catalog, then re-run save.")
+                return
+            }
 
             guard !entries.isEmpty else {
-                logInfo("⚠️  No sample code entries found in catalog")
+                logInfo("⚠️  Sample-code catalog parsed but contained zero entries; skipping.")
                 return
             }
 

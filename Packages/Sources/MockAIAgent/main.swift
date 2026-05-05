@@ -9,8 +9,8 @@ import Shared
 // It handles: process management, JSON-RPC communication, request/response formatting, and demo flows.
 // The actor maintains state across multiple async operations for the test session.
 
-/// A mock AI agent that demonstrates how to send MCP requests to an MCP server
-/// This helps visualize the complete MCP request/response cycle with full JSON logging
+// A mock AI agent that demonstrates how to send MCP requests to an MCP server
+// This helps visualize the complete MCP request/response cycle with full JSON logging
 
 @main
 struct MockAIAgent {
@@ -20,11 +20,18 @@ struct MockAIAgent {
         setbuf(stderr, nil)
 
         // Handle --version flag
-        let args = CommandLine.arguments
-        if args.contains("--version") || args.contains("-v") {
+        let rawArgs = CommandLine.arguments
+        if rawArgs.contains("--version") || rawArgs.contains("-v") {
             print(Shared.Constants.App.version)
             return
         }
+
+        // Parse --quiet (presentation/demo mode): suppress raw JSON dumps,
+        // server stderr echoes, and the base64 icon blob. Pretty-printed
+        // SERVER → CLIENT response sections are kept so the demo still
+        // tells a story without burying the audience in protocol noise.
+        let quiet = rawArgs.contains("--quiet") || rawArgs.contains("-q")
+        let args = rawArgs.filter { $0 != "--quiet" && $0 != "-q" }
 
         print("🤖 Mock AI Agent Starting...")
         print("=".repeating(80))
@@ -42,7 +49,7 @@ struct MockAIAgent {
         }
 
         do {
-            let agent = MCPClient(externalServerCommand: serverCommand)
+            let agent = MCPClient(externalServerCommand: serverCommand, quiet: quiet)
             try await agent.run()
         } catch {
             print("❌ Error: \(error)")
@@ -59,11 +66,12 @@ actor MCPClient {
     private var stdout: FileHandle?
     private var messageID = 0
     private let externalServerCommand: [String]?
-    private var responseBuffer = ""
+    private let quiet: Bool
     private var pendingResponses: [CheckedContinuation<String, Error>] = []
 
-    init(externalServerCommand: [String]? = nil) {
+    init(externalServerCommand: [String]? = nil, quiet: Bool = false) {
         self.externalServerCommand = externalServerCommand
+        self.quiet = quiet
     }
 
     func run() async throws {
@@ -146,21 +154,29 @@ actor MCPClient {
         stdin = stdinPipe.fileHandleForWriting
         stdout = stdoutPipe.fileHandleForReading
 
-        // Set up readability handler for stdout (streaming reads)
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            if let text = String(data: data, encoding: .utf8) {
-                Task {
-                    await self?.handleIncomingData(text)
+        // Stream stdout as ordered, complete lines via bytes.lines. The
+        // previous readabilityHandler approach spawned a fresh Task per
+        // chunk, so chunks could be processed on the actor out of order
+        // when the response straddled the pipe buffer (~32 KB). bytes.lines
+        // delivers lines in arrival order with internal buffering that
+        // handles UTF-8 boundaries correctly.
+        Task { [weak self] in
+            do {
+                for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
+                    await self?.handleLine(line)
                 }
+            } catch {
+                // pipe closed or read failed — server has exited.
             }
         }
 
-        // Log stderr from server
+        // Log stderr from server (suppressed in --quiet demo mode)
+        let echoStderr = !quiet
         Task {
             for try await line in stderrPipe.fileHandleForReading.bytes.lines {
-                print("  [SERVER STDERR] \(line)")
+                if echoStderr {
+                    print("  [SERVER STDERR] \(line)")
+                }
             }
         }
 
@@ -252,8 +268,7 @@ actor MCPClient {
                 lastError = error
                 // Retry with older version if protocol/version error
                 if case let .serverError(message) = error,
-                   message.lowercased().contains("protocol") || message.lowercased().contains("version")
-                {
+                   message.lowercased().contains("protocol") || message.lowercased().contains("version") {
                     print("⚠️  Version \(version) not supported, trying fallback...")
                     continue
                 }
@@ -508,11 +523,15 @@ actor MCPClient {
         let message = wireString + "\n"
         let messageData = Data(message.utf8)
 
-        // 2) Log a *pretty* version separately, so logs stay nice
-        print()
-        print("📤 Sending JSON:")
-        logJSON(request) // uses prettyPrinted for display only
-        print()
+        // 2) Log a *pretty* version separately, so logs stay nice.
+        //    In --quiet demo mode we skip the request dump; the dedicated
+        //    "📨 CLIENT → SERVER: <method>" line above already names the call.
+        if !quiet {
+            print()
+            print("📤 Sending JSON:")
+            logJSON(request)
+            print()
+        }
 
         // 3) Write the complete message
         stdin.write(messageData)
@@ -520,11 +539,14 @@ actor MCPClient {
         // 4) Wait for one newline-delimited response
         let responseLine = try await readLine(from: stdout)
 
-        // Log the JSON received
-        print()
-        print("📥 Received JSON:")
-        print(responseLine)
-        print()
+        // Log the raw JSON response (skipped in demo mode — the dedicated
+        // pretty "📬 SERVER → CLIENT: <method> response" block follows).
+        if !quiet {
+            print()
+            print("📥 Received JSON:")
+            print(responseLine)
+            print()
+        }
 
         // Decode response
         guard let responseData = responseLine.data(using: String.Encoding.utf8) else {
@@ -542,9 +564,7 @@ actor MCPClient {
 
         // Convert result dictionary to our specific type
         let resultData = try JSONEncoder().encode(response.result)
-        let result = try JSONDecoder().decode(R.self, from: resultData)
-
-        return result
+        return try JSONDecoder().decode(R.self, from: resultData)
     }
 
     private func sendNotification(_ notification: JSONRPCNotification) throws {
@@ -569,37 +589,28 @@ actor MCPClient {
         let message = wireString + "\n"
         let messageData = Data(message.utf8)
 
-        // 2) Log pretty version for display
-        print()
-        print("📤 Sending Notification JSON:")
-        logJSON(notification) // uses prettyPrinted for display only
-        print()
+        // 2) Log pretty version for display (skipped in --quiet demo mode)
+        if !quiet {
+            print()
+            print("📤 Sending Notification JSON:")
+            logJSON(notification)
+            print()
+        }
 
         // 3) Write the wire message
         stdin.write(messageData)
     }
 
-    private func handleIncomingData(_ text: String) {
-        // Add to buffer
-        responseBuffer += text
+    private func handleLine(_ line: String) {
+        if line.trimmingCharacters(in: .whitespaces).isEmpty {
+            return
+        }
 
-        // Process complete lines
-        while let newlineRange = responseBuffer.range(of: "\n") {
-            let line = String(responseBuffer[..<newlineRange.lowerBound])
-            responseBuffer.removeSubrange(...newlineRange.lowerBound)
-
-            // Skip empty lines
-            if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                continue
-            }
-
-            // Resume first pending continuation
-            if !pendingResponses.isEmpty {
-                let continuation = pendingResponses.removeFirst()
-                continuation.resume(returning: line)
-            } else {
-                print("⚠️  Received unexpected line: \(line.prefix(100))...")
-            }
+        if !pendingResponses.isEmpty {
+            let continuation = pendingResponses.removeFirst()
+            continuation.resume(returning: line)
+        } else {
+            print("⚠️  Received unexpected line: \(line.prefix(100))...")
         }
     }
 
@@ -621,8 +632,23 @@ actor MCPClient {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let jsonData = try? encoder.encode(value),
            let jsonString = String(data: jsonData, encoding: String.Encoding.utf8) {
-            print(jsonString)
+            print(quiet ? Self.truncateBase64Blobs(jsonString) : jsonString)
         }
+    }
+
+    /// Replace any string longer than 200 chars that looks like a `data:` base64
+    /// blob (or just a long base64 run) with a short placeholder, so the icon
+    /// PNG embedded in `serverInfo.icons[].src` doesn't dump a multi-line
+    /// base64 wall into the demo output.
+    private static func truncateBase64Blobs(_ json: String) -> String {
+        let pattern = #""(data:[^"]{60,}|[A-Za-z0-9+/=]{200,})""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return json }
+        let range = NSRange(json.startIndex..., in: json)
+        return regex.stringByReplacingMatches(
+            in: json,
+            range: range,
+            withTemplate: #""<…base64 truncated for demo…>""#
+        )
     }
 
     private func logRequestJSON(_ request: MCPRequest<some Codable & Sendable>) {

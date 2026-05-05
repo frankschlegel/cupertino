@@ -60,11 +60,11 @@ The packages catalog is **bundled** with Cupertino and indexed automatically:
 cupertino save
 ```
 
-To fetch package READMEs (optional):
+To fetch package source archives (optional):
 
 ```bash
-# Fetch README files for packages
-cupertino fetch --type package-docs
+# Fetch source archives for priority packages (#217 — bundled into --type packages)
+cupertino fetch --type packages --skip-metadata
 
 # Rebuild index
 cupertino save

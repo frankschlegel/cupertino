@@ -39,7 +39,7 @@ struct HomeView {
 
         // Quick Commands section
         result += renderPaddedLine("Quick Commands:", width: width)
-        result += renderPaddedLine("  cupertino fetch --type package-docs", width: width)
+        result += renderPaddedLine("  cupertino fetch --type packages", width: width)
         result += renderPaddedLine("  cupertino fetch --type archive", width: width)
         result += Box.teeRight + String(repeating: Box.horizontal, count: width - 2) + Box.teeLeft + "\r\n"
 

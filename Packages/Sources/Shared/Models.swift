@@ -1,3 +1,4 @@
+// swiftlint:disable file_length type_body_length
 import CryptoKit
 import Foundation
 
@@ -28,12 +29,15 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
     public let inheritedBy: [String]? // Types that inherit from this
     public let conformingTypes: [String]? // Types that conform to this protocol
 
-    // Raw markdown from original source (HTML conversion)
+    /// Raw markdown from original source (HTML conversion)
     public let rawMarkdown: String?
 
     // Crawl metadata
     public let crawledAt: Date
     public let contentHash: String
+    /// Hops from the start URL when this page was discovered. nil for
+    /// pages saved by binaries that pre-date depth stamping.
+    public let crawlDepth: Int?
 
     public init(
         id: UUID = UUID(),
@@ -54,7 +58,8 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         conformingTypes: [String]? = nil,
         rawMarkdown: String? = nil,
         crawledAt: Date = Date(),
-        contentHash: String = ""
+        contentHash: String = "",
+        crawlDepth: Int? = nil
     ) {
         self.id = id
         self.url = url
@@ -75,6 +80,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         self.rawMarkdown = rawMarkdown
         self.crawledAt = crawledAt
         self.contentHash = contentHash
+        self.crawlDepth = crawlDepth
     }
 
     // MARK: - Codable
@@ -83,9 +89,9 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        // Generate UUID if id is missing (for backwards compatibility)
-        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         url = try container.decode(URL.self, forKey: .url)
+        // Derive a deterministic id if missing (older records lack this field).
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? Self.deterministicID(for: url)
         title = try container.decode(String.self, forKey: .title)
         kind = try container.decode(Kind.self, forKey: .kind)
         source = try container.decode(Source.self, forKey: .source)
@@ -103,6 +109,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         rawMarkdown = try container.decodeIfPresent(String.self, forKey: .rawMarkdown)
         crawledAt = try container.decode(Date.self, forKey: .crawledAt)
         contentHash = try container.decode(String.self, forKey: .contentHash)
+        crawlDepth = try container.decodeIfPresent(Int.self, forKey: .crawlDepth)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -110,7 +117,7 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         case abstract, declaration, overview, sections, codeExamples
         case language, platforms, module
         case conformsTo, inheritedBy, conformingTypes
-        case rawMarkdown, crawledAt, contentHash
+        case rawMarkdown, crawledAt, contentHash, crawlDepth
     }
 
     // MARK: - Nested Types
@@ -420,8 +427,10 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
         // Methods and initializers
         if decl.hasPrefix("func ") || decl.contains(" func ") { return .method }
         // Initializers: init(, init?(, init!(, init<T>
-        if decl.hasPrefix("init(") || decl.hasPrefix("init?") || decl.hasPrefix("init!") || decl.hasPrefix("init<") { return .method }
-        if decl.contains(" init(") || decl.contains(" init?") || decl.contains(" init!") || decl.contains(" init<") { return .method }
+        if decl.hasPrefix("init(") || decl.hasPrefix("init?")
+            || decl.hasPrefix("init!") || decl.hasPrefix("init<") { return .method }
+        if decl.contains(" init(") || decl.contains(" init?")
+            || decl.contains(" init!") || decl.contains(" init<") { return .method }
         if decl.hasPrefix("deinit") { return .method }
         if decl.hasPrefix("static func ") || decl.hasPrefix("class func ") { return .method }
 
@@ -439,6 +448,97 @@ public struct StructuredDocumentationPage: Codable, Sendable, Identifiable, Hash
 
         // Still unknown after all heuristics
         return .unknown
+    }
+
+    // MARK: - Deterministic Identity & Content Hashing
+
+    /// Derive a stable UUID from the page URL.
+    /// Same URL → same UUID across runs and machines. Use this anywhere a
+    /// `StructuredDocumentationPage` is constructed so persisted records are
+    /// reproducible.
+    public static func deterministicID(for url: URL) -> UUID {
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        let bytes = Array(digest.prefix(16))
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        var formatted = hex
+        formatted.insert("-", at: formatted.index(formatted.startIndex, offsetBy: 8))
+        formatted.insert("-", at: formatted.index(formatted.startIndex, offsetBy: 13))
+        formatted.insert("-", at: formatted.index(formatted.startIndex, offsetBy: 18))
+        formatted.insert("-", at: formatted.index(formatted.startIndex, offsetBy: 23))
+        return UUID(uuidString: formatted) ?? UUID()
+    }
+
+    /// SHA-256 over the page's semantic content fields, in a stable encoding.
+    /// Excludes `id`, `crawledAt`, `contentHash`, and `rawMarkdown` (the last
+    /// is derived from the structured fields and embeds `crawledAt`).
+    /// Two crawls of the same Apple-side content produce the same hash.
+    public var canonicalContentHash: String {
+        let payload = CanonicalPayload(
+            url: url,
+            title: title,
+            kind: kind,
+            source: source,
+            abstract: abstract,
+            declaration: declaration,
+            overview: overview,
+            sections: sections,
+            codeExamples: codeExamples,
+            language: language,
+            platforms: platforms,
+            module: module,
+            conformsTo: conformsTo,
+            inheritedBy: inheritedBy,
+            conformingTypes: conformingTypes
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload) else { return "" }
+        return HashUtilities.sha256(of: data)
+    }
+
+    private struct CanonicalPayload: Encodable {
+        let url: URL
+        let title: String
+        let kind: Kind
+        let source: Source
+        let abstract: String?
+        let declaration: Declaration?
+        let overview: String?
+        let sections: [Section]
+        let codeExamples: [CodeExample]
+        let language: String?
+        let platforms: [String]?
+        let module: String?
+        let conformsTo: [String]?
+        let inheritedBy: [String]?
+        let conformingTypes: [String]?
+    }
+
+    /// Return a copy with `contentHash` replaced. Use after constructing a
+    /// page with `contentHash: ""` to stamp `canonicalContentHash` in one step.
+    public func with(contentHash newHash: String) -> StructuredDocumentationPage {
+        StructuredDocumentationPage(
+            id: id,
+            url: url,
+            title: title,
+            kind: kind,
+            source: source,
+            abstract: abstract,
+            declaration: declaration,
+            overview: overview,
+            sections: sections,
+            codeExamples: codeExamples,
+            language: language,
+            platforms: platforms,
+            module: module,
+            conformsTo: conformsTo,
+            inheritedBy: inheritedBy,
+            conformingTypes: conformingTypes,
+            rawMarkdown: rawMarkdown,
+            crawledAt: crawledAt,
+            contentHash: newHash,
+            crawlDepth: crawlDepth
+        )
     }
 }
 
@@ -742,11 +842,22 @@ public enum HashUtilities {
 
 /// Utilities for URL manipulation
 public enum URLUtilities {
-    /// Normalize a URL (remove hash, query params)
+    /// Normalize a URL: strip fragment and query, lowercase the path.
+    /// Apple's docs server is case-insensitive on the path
+    /// (`/documentation/Cinematic/CNAssetInfo-2ata2` and the all-lowercase
+    /// form return the same content), so dedup logic must treat them as one
+    /// page (#200). Dash-vs-underscore framework variants
+    /// (`professional-video-applications` ↔ `professional_video_applications`)
+    /// are NOT collapsed here because at least one Apple framework
+    /// (`installer_js`) legitimately uses underscore in its path; that axis
+    /// is handled at the search-index save layer instead.
     public static func normalize(_ url: URL) -> URL? {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         components?.fragment = nil
         components?.query = nil
+        if let path = components?.path {
+            components?.path = path.lowercased()
+        }
         return components?.url
     }
 
@@ -771,7 +882,14 @@ public enum URLUtilities {
         return "root"
     }
 
-    /// Generate filename from URL
+    /// Generate filename from URL.
+    ///
+    /// Output is the basename only (no `.json` extension, no framework dir).
+    /// Length is capped at `maxFilenameBytes` so that `<filename>.json` fits
+    /// within the 255-byte filesystem limit on macOS HFS+/APFS. Long
+    /// auto-generated DocC slugs (e.g. Metal shader encoders with dozens of
+    /// named parameters) get truncated and appended with an 8-char SHA-1
+    /// suffix to keep collision-resistant uniqueness.
     public static func filename(from url: URL) -> String {
         var cleaned = url.absoluteString
         let originalCleaned = cleaned
@@ -804,6 +922,38 @@ public enum URLUtilities {
             let hash = HashUtilities.sha256(of: originalCleaned)
             let shortHash = String(hash.prefix(8))
             cleaned = "\(cleaned)_\(shortHash)"
+        }
+
+        // Cap length so that `<filename>.json` (5-byte extension) fits within
+        // the 255-byte filesystem basename limit. Without this, deeply-named
+        // Apple symbols (e.g. MPSSVGF.encodeReprojection(...) with 12+ named
+        // parameters) generate 280+ char filenames that fail to save with
+        // POSIX errno 63 "File name too long".
+        let maxFilenameBytes = 240
+        if cleaned.utf8.count > maxFilenameBytes {
+            let hash = HashUtilities.sha256(of: originalCleaned)
+            let shortHash = String(hash.prefix(8))
+            let suffix = "_\(shortHash)"
+
+            // Strip any prior hash suffix so we don't end up with two
+            let withoutPriorSuffix: String = if hasSpecialChars, cleaned.hasSuffix(suffix) {
+                String(cleaned.dropLast(suffix.count))
+            } else {
+                cleaned
+            }
+
+            // Slugs are ASCII-only after the regex normalization above, so
+            // String.prefix on character count == byte count.
+            let availableBytes = maxFilenameBytes - suffix.utf8.count
+            var truncated = String(withoutPriorSuffix.prefix(availableBytes))
+
+            // Don't end on a trailing underscore — looks ugly, complicates
+            // collision behavior with the suffix separator.
+            while truncated.hasSuffix("_") {
+                truncated = String(truncated.dropLast())
+            }
+
+            cleaned = truncated + suffix
         }
 
         return cleaned.isEmpty ? "index" : cleaned
@@ -919,8 +1069,10 @@ public struct PackageDownloadProgress: Sendable {
 /// Statistics for package documentation downloads
 public struct PackageDownloadStatistics: Sendable {
     public var totalPackages: Int
-    public var newREADMEs: Int
-    public var updatedREADMEs: Int
+    public var newPackages: Int
+    public var updatedPackages: Int
+    public var totalFilesSaved: Int
+    public var totalBytesSaved: Int64
     public var successfulDocs: Int
     public var errors: Int
     public var startTime: Date?
@@ -928,25 +1080,29 @@ public struct PackageDownloadStatistics: Sendable {
 
     public init(
         totalPackages: Int = 0,
-        newREADMEs: Int = 0,
-        updatedREADMEs: Int = 0,
+        newPackages: Int = 0,
+        updatedPackages: Int = 0,
+        totalFilesSaved: Int = 0,
+        totalBytesSaved: Int64 = 0,
         successfulDocs: Int = 0,
         errors: Int = 0,
         startTime: Date? = nil,
         endTime: Date? = nil
     ) {
         self.totalPackages = totalPackages
-        self.newREADMEs = newREADMEs
-        self.updatedREADMEs = updatedREADMEs
+        self.newPackages = newPackages
+        self.updatedPackages = updatedPackages
+        self.totalFilesSaved = totalFilesSaved
+        self.totalBytesSaved = totalBytesSaved
         self.successfulDocs = successfulDocs
         self.errors = errors
         self.startTime = startTime
         self.endTime = endTime
     }
 
-    /// Total successful READMEs (new + updated)
-    public var successfulREADMEs: Int {
-        newREADMEs + updatedREADMEs
+    /// Total successful packages (new + updated)
+    public var successfulPackages: Int {
+        newPackages + updatedPackages
     }
 
     /// Duration of the download in seconds

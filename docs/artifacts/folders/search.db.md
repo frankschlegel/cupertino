@@ -38,6 +38,11 @@ CREATE VIRTUAL TABLE docs_fts USING fts5(
 );
 ```
 
+BM25 weights are passed per-column at query time, not stamped into the FTS
+schema. The main docs-search call uses
+`bm25(docs_fts, 1.0, 1.0, 2.0, 1.0, 10.0, 1.0, 3.0)` — title dominates,
+summary modest, body uniform (#181). See `SearchIndex.swift` query builder.
+
 ### Metadata Table
 
 ```sql
@@ -46,15 +51,41 @@ CREATE TABLE docs_metadata (
     source TEXT NOT NULL DEFAULT 'apple-docs',
     framework TEXT NOT NULL,
     language TEXT NOT NULL DEFAULT 'swift',
+    kind TEXT NOT NULL DEFAULT 'unknown',  -- #192 C1 taxonomy
+    symbols TEXT,                           -- #192 D: denormalized symbol names for bm25
     file_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     last_crawled INTEGER NOT NULL,
     word_count INTEGER NOT NULL,
     source_type TEXT DEFAULT 'apple',
     package_id INTEGER,
-    json_data TEXT
+    json_data TEXT,
+    -- Availability columns (min_ios, min_macos, ...) omitted for brevity
 );
 ```
+
+### Kind Taxonomy
+
+Every row in `docs_metadata` carries a high-level `kind` value assigned at
+index time by `Search.Classify.kind(source:structuredKind:uriPath:)`. Used by
+the smart-query wrapper (#192 section E) to route per-intent.
+
+| Kind                | What                              | Source branch                |
+|---------------------|-----------------------------------|------------------------------|
+| `symbolPage`        | API reference with a declaration  | `apple-docs` + decl kind     |
+| `article`           | Discussion / overview prose       | `apple-docs` + article/coll. |
+| `tutorial`          | DocC tutorial chapter             | `apple-docs` + tutorial      |
+| `sampleCode`        | Apple sample-code landing page    | `apple-docs` + `/samplecode/` |
+| `evolutionProposal` | Swift Evolution proposal          | `swift-evolution`            |
+| `swiftBook`         | The Swift Programming Language    | `swift-book`                 |
+| `swiftOrgDoc`       | Other Swift.org docs              | `swift-org`                  |
+| `hig`               | Human Interface Guidelines        | `hig`                        |
+| `archive`           | Legacy Apple Archive guide        | `apple-archive`              |
+| `unknown`           | Fallback — classifier gap         | any                          |
+
+Reserved for future sources (not yet produced): `wwdcTranscript` (#58),
+`swiftForumsThread` (#89), `externalLibraryDoc` (#116). Adding a source
+requires one new case in `DocKind` and one new branch in `Classify.kind(...)`.
 
 ### Tokenizer
 

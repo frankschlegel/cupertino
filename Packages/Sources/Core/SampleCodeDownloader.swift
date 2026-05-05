@@ -27,6 +27,19 @@ import AppKit
 /// Downloads Apple sample code projects (zip/tar files)
 @MainActor
 public final class SampleCodeDownloader {
+    #if os(macOS)
+    /// Activation policy required to make the authentication window appear (#6).
+    /// A bare CLI process defaults to `.prohibited`, which silently drops
+    /// `NSWindow.makeKeyAndOrderFront` calls. `.regular` lets the window server
+    /// display the auth window; a transient Dock icon is acceptable.
+    /// `nonisolated` because it's a constant that doesn't read `NSApp` state.
+    /// Exposed for direct test coverage — any regression to `.prohibited` or
+    /// `.accessory` will fail `SampleCodeAuthPolicyTests`.
+    nonisolated static var authFlowActivationPolicy: NSApplication.ActivationPolicy {
+        .regular
+    }
+    #endif
+
     private let outputDirectory: URL
     private let maxSamples: Int?
     private let forceDownload: Bool
@@ -113,10 +126,112 @@ public final class SampleCodeDownloader {
 
         stats.endTime = Date()
 
+        // Write a fresh catalog.json next to the downloaded zips. After #215
+        // there is no embedded fallback — this file is the only source the
+        // search-index builder will read. If this write fails the user has
+        // to re-run fetch (or hand-roll a catalog.json); save will skip
+        // sample-code indexing with a clear hint pointing back here.
+        // Source: Apple's `tutorials/data/documentation/samplecode.json`.
+        await writeCatalogJSON()
+
         logInfo("\n✅ Download completed!")
         logStatistics(stats)
 
         return stats
+    }
+
+    /// Fetch Apple's sample-code listing JSON and write a `catalog.json`
+    /// next to the downloaded zips, in the same shape as
+    /// `SampleCodeCatalogJSON`. Best-effort; logs and returns on any error.
+    /// Exposed `internal` so tests can drive it independently of a full
+    /// `download()` run.
+    func writeCatalogJSON() async {
+        let catalogURL = outputDirectory.appendingPathComponent(SampleCodeCatalog.onDiskCatalogFilename)
+        do {
+            guard let listingURL = URL(string: Shared.Constants.BaseURL.appleSampleCodeJSON) else {
+                logError("Could not construct Apple sample-code listing URL — skipping catalog.json write.")
+                return
+            }
+            let (data, _) = try await URLSession.shared.data(from: listingURL)
+            guard let catalog = Self.transformAppleListingToCatalog(data: data) else {
+                logError("Could not transform Apple sample-code listing — skipping catalog.json write.")
+                return
+            }
+            try Self.writeCatalog(catalog, to: catalogURL)
+            logInfo("📝 Wrote sample-code catalog: \(catalogURL.path) (\(catalog.count) entries)")
+        } catch {
+            logError("Failed to write catalog.json (\(error)) — `cupertino save` will skip sample-code indexing.")
+        }
+    }
+
+    /// Pure write step: serialize `catalog` to `url` atomically. Extracted
+    /// from `writeCatalogJSON` so unit tests can exercise the disk
+    /// behaviour without touching the network. `nonisolated` because
+    /// there's no instance state — it's a static utility.
+    nonisolated static func writeCatalog(_ catalog: SampleCodeCatalogJSON, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let encoded = try encoder.encode(catalog)
+        try encoded.write(to: url, options: .atomic)
+    }
+
+    /// Transform Apple's `tutorials/data/documentation/samplecode.json` into
+    /// a `SampleCodeCatalogJSON`. Returns nil when the input doesn't decode
+    /// as expected. Pure on its inputs (no instance state, no MainActor
+    /// hop) so tests can call it directly from any context.
+    nonisolated static func transformAppleListingToCatalog(data: Data) -> SampleCodeCatalogJSON? {
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let refs = raw["references"] as? [String: [String: Any]] else {
+            return nil
+        }
+
+        var entries: [SampleCodeEntry] = []
+        for (_, ref) in refs {
+            guard ref["role"] as? String == "sampleCode",
+                  let title = ref["title"] as? String,
+                  let urlString = ref["url"] as? String else {
+                continue
+            }
+
+            // framework + slug from /documentation/<Framework>/<slug>
+            let parts = urlString.split(separator: "/").map(String.init)
+            guard parts.count >= 3 else { continue }
+            let framework = parts[1]
+            let slug = parts[2...].joined(separator: "/")
+
+            // description from abstract array
+            var description = ""
+            if let abstract = ref["abstract"] as? [[String: Any]] {
+                description = abstract.compactMap { $0["text"] as? String }.joined()
+            }
+
+            let zipFilename = "\(framework.lowercased().replacingOccurrences(of: "_", with: "-"))-\(slug).zip"
+            let webURL = "https://developer.apple.com\(urlString)"
+
+            entries.append(SampleCodeEntry(
+                title: title,
+                url: urlString,
+                framework: framework,
+                description: description,
+                zipFilename: zipFilename,
+                webURL: webURL
+            ))
+        }
+
+        entries.sort { lhs, rhs in
+            if lhs.framework.lowercased() == rhs.framework.lowercased() {
+                return lhs.title.lowercased() < rhs.title.lowercased()
+            }
+            return lhs.framework.lowercased() < rhs.framework.lowercased()
+        }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        return SampleCodeCatalogJSON(
+            version: "fetched",
+            lastCrawled: now,
+            count: entries.count,
+            entries: entries
+        )
     }
 
     // MARK: - Private Methods
@@ -130,9 +245,7 @@ public final class SampleCodeDownloader {
         try await Task.sleep(for: Shared.Constants.Delay.sampleCodePageLoad)
 
         // Extract samples using JavaScript
-        let samples = try await extractSamplesWithJavaScript(webView)
-
-        return samples
+        return try await extractSamplesWithJavaScript(webView)
     }
 
     private func extractSamplesWithJavaScript(_ webView: WKWebView) async throws -> [SampleMetadata] {
@@ -384,53 +497,160 @@ public final class SampleCodeDownloader {
         logInfo("")
 
         #if os(macOS)
-        if visibleBrowser {
-            // Create webview with proper frame
-            let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768))
+        guard visibleBrowser else { return }
 
-            // Load saved cookies first
-            await loadCookies(into: webView)
+        // Fix for #6: a bare CLI process is created with activation policy
+        // `.prohibited`, which makes `NSWindow.makeKeyAndOrderFront` a silent
+        // no-op. Flip to `.regular` so the auth window actually appears
+        // (transient Dock icon is acceptable), then flip back on exit.
+        //
+        // Use `NSApplication.shared` rather than `NSApp`: in a bare Swift CLI,
+        // `NSApp` is an implicitly-unwrapped nil until `.shared` materializes it.
+        NSApplication.shared.setActivationPolicy(Self.authFlowActivationPolicy)
 
-            // Create and show window
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
-                styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Apple Developer Sign In"
-            window.contentView = webView
-            window.center()
-            window.isReleasedWhenClosed = false // Important: keep window alive
+        // Call `finishLaunching()` explicitly — `NSApplication.run()` normally
+        // does this, but we don't use `.run()`. Without it the CA runloop
+        // observer that commits WKWebView layers isn't attached.
+        NSApplication.shared.finishLaunching()
+        defer { NSApplication.shared.setActivationPolicy(.prohibited) }
 
-            // Load Apple Developer login page
-            let loginURL = URL(string: Shared.Constants.BaseURL.appleDeveloperAccount)!
-            webView.load(URLRequest(url: loginURL))
+        // Explicit config so the auth WebView uses the persistent cookie jar.
+        // We do NOT set `customUserAgent` here: idmsa.apple.com returns 403 to
+        // our spoofed Safari UA (verified with curl during #6 deep-dive). Let
+        // WebKit send its native Safari-compatible UA, which idmsa accepts.
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1024, height: 768), configuration: config)
+        await loadCookies(into: webView)
 
-            // Show window
-            window.makeKeyAndOrderFront(nil)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Apple Developer Sign In"
+        window.contentView = webView
+        window.center()
+        window.isReleasedWhenClosed = false
 
-            // Activate app to bring window to front
-            NSApp.activate(ignoringOtherApps: true)
+        let loginURL = URL(string: Shared.Constants.BaseURL.appleDeveloperAccount)!
 
-            logInfo("✅ Browser window opened")
-            logInfo("   Sign in to your Apple Developer account")
-            logInfo("   Press Enter when you're done signing in...")
+        // NOTE: show the window BEFORE load()+delegate wiring so the user
+        // immediately sees something; but do NOT call webView.load() here —
+        // the delegate must be attached first, otherwise the initial
+        // navigation's success/failure is invisible (cause of #6's empty-
+        // window diagnosis: didFailProvisionalNavigation couldn't log because
+        // the delegate wasn't attached yet).
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
 
-            // Wait for user to press enter
-            // Note: Using Task.detached to avoid blocking MainActor with synchronous readLine()
-            await Task.detached {
-                _ = readLine()
-            }.value
+        // Surface progress on stdout (bypasses Log.info's category router
+        // which in visible-browser invocations wasn't reaching stdout).
+        Logging.ConsoleLogger.info("✅ Browser window opened")
+        Logging.ConsoleLogger.info("   Sign in to your Apple Developer account")
+        if Self.isInteractiveStdin() {
+            Logging.ConsoleLogger.info("   The window closes automatically when sign-in is detected.")
+            Logging.ConsoleLogger.info("   (Or close the window / press Enter here to finish.)")
+        } else {
+            Logging.ConsoleLogger.info("   The window closes automatically when sign-in is detected.")
+            Logging.ConsoleLogger.info("   (Or close the window to finish — stdin is not a TTY.)")
+        }
 
-            // Save cookies
-            await saveCookies(from: webView)
+        let outcome = await Self.awaitAuthOutcome(webView: webView, window: window, initialURL: loginURL)
 
-            window.close()
-            logInfo("✅ Authentication complete, cookies saved")
+        await saveCookies(from: webView)
+        window.close()
+
+        switch outcome {
+        case .autoDetected:
+            logInfo("✅ Sign-in detected automatically, cookies saved.")
+        case .userConfirmed:
+            logInfo("✅ Authentication complete (Enter), cookies saved.")
+        case .userClosedWindow:
+            logInfo("⚠️  Auth window closed before sign-in was detected. Any cookies present were saved.")
         }
         #endif
     }
+
+    // MARK: - Auth flow coordination (#6 follow-up)
+
+    /// Terminal state of an interactive auth session.
+    enum AuthOutcome: Sendable {
+        /// Target session cookie appeared without user input.
+        case autoDetected
+        /// User pressed Enter at the prompt.
+        case userConfirmed
+        /// User closed the auth window.
+        case userClosedWindow
+    }
+
+    /// Names of Apple session cookies whose presence on an `*.apple.com` domain
+    /// we treat as "the user has completed sign-in". Exposed for tests.
+    nonisolated static let appleSessionCookieNames: Set<String> = ["myacinfo"]
+
+    /// Pure predicate: does this cookie set contain evidence of an Apple sign-in?
+    nonisolated static func containsAppleSessionCookie(_ cookies: [HTTPCookie]) -> Bool {
+        cookies.contains { cookie in
+            cookie.domain.lowercased().contains("apple.com")
+                && appleSessionCookieNames.contains(cookie.name)
+        }
+    }
+
+    /// Wraps `isatty(fileno(stdin))` so the TTY check is mockable via `_isInteractiveStdinOverride`.
+    nonisolated static func isInteractiveStdin() -> Bool {
+        if let override = _isInteractiveStdinOverride { return override }
+        return isatty(fileno(stdin)) != 0
+    }
+
+    /// Test seam for forcing the TTY check result.
+    // swiftlint:disable:next identifier_name
+    nonisolated(unsafe) static var _isInteractiveStdinOverride: Bool?
+
+    #if os(macOS)
+    /// Races three signals: (1) WebView navigation reports an Apple session
+    /// cookie present, (2) the user presses Enter at the prompt, (3) the user
+    /// closes the auth window. Returns whichever fires first.
+    @MainActor
+    private static func awaitAuthOutcome(
+        webView: WKWebView,
+        window: NSWindow,
+        initialURL: URL
+    ) async -> AuthOutcome {
+        await withCheckedContinuation { (continuation: CheckedContinuation<AuthOutcome, Never>) in
+            let coordinator = AuthFlowCoordinator { outcome in
+                continuation.resume(returning: outcome)
+            }
+            webView.navigationDelegate = coordinator
+
+            // (2) Terminal Enter — only if stdin is interactive.
+            if isInteractiveStdin() {
+                Task.detached {
+                    if readLine() != nil {
+                        await MainActor.run { coordinator.userPressedEnter() }
+                    }
+                }
+            }
+
+            // (3) Window close.
+            let token = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in coordinator.userClosedWindow() }
+            }
+            coordinator.onFinish = { [weak coordinator] in
+                NotificationCenter.default.removeObserver(token)
+                webView.navigationDelegate = nil
+                _ = coordinator
+            }
+
+            // (1) Kick off the initial navigation AFTER the delegate is wired.
+            _ = webView.load(URLRequest(url: initialURL))
+        }
+    }
+    #endif
 
     private func loadCookies(into webView: WKWebView) async {
         guard FileManager.default.fileExists(atPath: cookiesPath.path) else {
@@ -505,9 +725,7 @@ public final class SampleCodeDownloader {
         try await Task.sleep(for: Shared.Constants.Delay.sampleCodeDownload)
 
         // Get HTML content
-        let html = try await webView.evaluateJavaScript(Shared.Constants.JavaScript.getDocumentHTML) as? String ?? ""
-
-        return html
+        return try await webView.evaluateJavaScript(Shared.Constants.JavaScript.getDocumentHTML) as? String ?? ""
     }
 
     // MARK: - Logging
@@ -608,3 +826,76 @@ struct CookieData: Codable {
     let expiresDate: Date?
     let isSecure: Bool
 }
+
+// MARK: - Auth Flow Coordinator (#6 follow-up)
+
+#if os(macOS)
+/// Owns the WKNavigationDelegate plus the Enter / window-close bookkeeping for
+/// the auth flow. Resumes a continuation with the first outcome it sees.
+/// Subsequent signals are dropped (idempotent).
+@MainActor
+private final class AuthFlowCoordinator: NSObject, WKNavigationDelegate {
+    private let onComplete: (SampleCodeDownloader.AuthOutcome) -> Void
+    private var completed = false
+    /// Called exactly once, when the coordinator finishes, to let the caller
+    /// tear down the notification observer and nil out the webView delegate.
+    var onFinish: (() -> Void)?
+
+    init(onComplete: @escaping (SampleCodeDownloader.AuthOutcome) -> Void) {
+        self.onComplete = onComplete
+    }
+
+    // MARK: WKNavigationDelegate
+
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Force a render commit. In a Swift CLI host the async/await runloop
+        // doesn't always tick the CoreAnimation observer, so layers can stay
+        // uncomitted even after successful page load. These hints give CA a
+        // deterministic commit point. See followup issue: JSON-endpoint refactor
+        // supersedes this whole path.
+        Task { @MainActor in
+            webView.needsDisplay = true
+            webView.layer?.setNeedsDisplay()
+            webView.window?.displayIfNeeded()
+            CATransaction.flush()
+        }
+
+        Task { @MainActor [weak self] in
+            let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+            if SampleCodeDownloader.containsAppleSessionCookie(cookies) {
+                self?.complete(.autoDetected)
+            }
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        Logging.ConsoleLogger.error("🔐 Auth WebView navigation failed: \(error.localizedDescription)")
+    }
+
+    nonisolated func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        Logging.ConsoleLogger.error("🔐 Auth WebView provisional navigation failed: \(error.localizedDescription)")
+    }
+
+    // MARK: Explicit signals
+
+    func userPressedEnter() {
+        complete(.userConfirmed)
+    }
+
+    func userClosedWindow() {
+        complete(.userClosedWindow)
+    }
+
+    private func complete(_ outcome: SampleCodeDownloader.AuthOutcome) {
+        guard !completed else { return }
+        completed = true
+        onComplete(outcome)
+        onFinish?()
+        onFinish = nil
+    }
+}
+#endif

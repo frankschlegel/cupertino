@@ -23,8 +23,8 @@ public actor MCPServer {
     private var isRunning = false
     private var requestID: Int = 0
 
-    public init(name: String, version: String) {
-        serverInfo = Implementation(name: name, version: version)
+    public init(name: String, version: String, icons: [Icon]? = nil) {
+        serverInfo = Implementation(name: name, version: version, icons: icons)
         capabilities = ServerCapabilities()
     }
 

@@ -32,7 +32,7 @@ These commands are identical:
 ```bash
 cupertino fetch
 cupertino fetch --type docs
-cupertino fetch --type docs --max-pages 13000
+cupertino fetch --type docs --max-pages 1000000
 ```
 
 ## Other Type Options
@@ -50,7 +50,7 @@ cupertino fetch --type evolution
 cupertino fetch --type packages
 
 # Apple sample code
-cupertino fetch --type code --authenticate
+cupertino fetch --type code
 
 # Everything
 cupertino fetch --type all
@@ -63,7 +63,7 @@ cupertino fetch --type all
 | Type | `docs` |
 | Start URL | `https://developer.apple.com/documentation/` |
 | Output Directory | `~/.cupertino/docs` |
-| Max Pages | 13,000 |
+| Max Pages | 1,000,000 (effectively uncapped) |
 | Max Depth | 15 |
 
 ## Common Workflows
@@ -78,8 +78,8 @@ cupertino fetch
 ```bash
 # Still uses docs type, but with options
 cupertino fetch --max-pages 5000
-cupertino fetch --resume
-cupertino fetch --force
+cupertino fetch --start-clean   # discard saved session, start fresh
+cupertino fetch --force         # re-fetch even unchanged pages
 ```
 
 ### Explicit Type

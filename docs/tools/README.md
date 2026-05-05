@@ -13,7 +13,7 @@ Cupertino provides these MCP tools for AI agents to search and read documentatio
 | [list_frameworks](list_frameworks/) | List available frameworks with document counts |
 | [read_document](read_document/) | Read a document by URI in JSON or Markdown format |
 
-### Sample Code Tools (requires `cupertino index`)
+### Sample Code Tools (requires `cupertino save --samples`)
 
 | Tool | Description |
 |------|-------------|

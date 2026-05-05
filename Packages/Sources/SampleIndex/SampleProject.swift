@@ -35,6 +35,21 @@ extension SampleIndex {
         /// When the project was indexed
         public let indexedAt: Date
 
+        // MARK: Availability (#228 phase 2)
+
+        /// Per-platform deployment targets parsed from `Package.swift`
+        /// during the indexing pass. Same shape as the per-package
+        /// version in `packages.db`. Empty when the sample shipped no
+        /// `platforms: [...]` block (typical for Apple's Xcode-project
+        /// samples).
+        public let deploymentTargets: [String: String]
+
+        /// Free-form tag describing where the availability data came
+        /// from. Currently only `"sample-swift"` (parsed from
+        /// `Package.swift` + `.swift` sources by `SampleIndexBuilder`).
+        /// nil when no annotation was loaded.
+        public let availabilitySource: String?
+
         public init(
             id: String,
             title: String,
@@ -45,7 +60,9 @@ extension SampleIndex {
             zipFilename: String,
             fileCount: Int,
             totalSize: Int,
-            indexedAt: Date = Date()
+            indexedAt: Date = Date(),
+            deploymentTargets: [String: String] = [:],
+            availabilitySource: String? = nil
         ) {
             self.id = id
             self.title = title
@@ -57,6 +74,8 @@ extension SampleIndex {
             self.fileCount = fileCount
             self.totalSize = totalSize
             self.indexedAt = indexedAt
+            self.deploymentTargets = deploymentTargets
+            self.availabilitySource = availabilitySource
         }
     }
 }

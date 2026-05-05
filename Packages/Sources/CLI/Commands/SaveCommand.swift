@@ -1,12 +1,19 @@
 import ArgumentParser
 import Foundation
+import Indexer
 import Logging
 import RemoteSync
+import SampleIndex
 import Search
 import Shared
 
 // MARK: - Save Command
 
+/// Thin CLI wrapper around `Indexer.DocsService` / `Indexer.PackagesService`
+/// / `Indexer.SamplesService` / `Indexer.Preflight` (#244). The
+/// indexers + preflight pipeline live in the Indexer package; this
+/// command parses flags, runs the preflight prompt, dispatches to the
+/// requested scope, and renders progress.
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct SaveCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -44,159 +51,156 @@ struct SaveCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Stream documentation from GitHub (instant setup, no local files needed)")
     var remote: Bool = false
 
+    @Flag(
+        name: .long,
+        help: """
+        Build search.db (Apple docs + Swift Evolution + HIG + Archive + \
+        Swift.org + Swift Book). Defaults to ON when no scope flag is \
+        passed. (#231)
+        """
+    )
+    var docs: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Build packages.db from extracted package archives at \
+        `~/.cupertino/packages/<owner>/<repo>/`. (#231)
+        """
+    )
+    var packages: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
+        Build samples.db from extracted sample-code zips at \
+        `~/.cupertino/sample-code/`. Replaces the removed `cupertino \
+        index` command. (#231)
+        """
+    )
+    var samples: Bool = false
+
+    @Option(name: .long, help: "Sample-code directory for `--samples` (#231).")
+    var samplesDir: String?
+
+    @Option(name: .long, help: "samples.db path override for `--samples` (#231).")
+    var samplesDB: String?
+
+    @Flag(
+        name: .long,
+        help: "Force re-index of every sample under `--samples` (existing rows wiped)."
+    )
+    var force: Bool = false
+
+    @Flag(
+        name: [.short, .long],
+        help: "Skip the preflight summary + confirmation prompt (#232). Auto-skipped when stdin isn't a TTY."
+    )
+    var yes: Bool = false
+
     mutating func run() async throws {
-        // Handle remote mode separately
         if remote {
             try await runRemote()
             return
         }
 
-        Logging.ConsoleLogger.info("🔨 Building Search Index\n")
+        let scopeFlagsSet = docs || packages || samples
+        let buildDocs = !scopeFlagsSet || docs
+        let buildPackages = !scopeFlagsSet || packages
+        let buildSamples = !scopeFlagsSet || samples
 
-        // Determine effective base directory
+        if !runPreflightAndConfirm(
+            buildDocs: buildDocs,
+            buildPackages: buildPackages,
+            buildSamples: buildSamples
+        ) {
+            Logging.ConsoleLogger.info("Aborted by user.")
+            return
+        }
+
         let effectiveBase = baseDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
             ?? Shared.Constants.defaultBaseDirectory
 
-        // Individual options override the base-derived paths
-        let docsURL = docsDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
-            ?? effectiveBase.appendingPathComponent(Shared.Constants.Directory.docs)
-
-        let evolutionURL = evolutionDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
-            ?? effectiveBase.appendingPathComponent(Shared.Constants.Directory.swiftEvolution)
-
-        let swiftOrgURL = swiftOrgDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
-            ?? effectiveBase.appendingPathComponent(Shared.Constants.Directory.swiftOrg)
-
-        let searchDBURL = searchDB.map { URL(fileURLWithPath: $0).expandingTildeInPath }
-            ?? effectiveBase.appendingPathComponent(Shared.Constants.FileName.searchDatabase)
-
-        // Delete existing database to avoid FTS5 duplicate rows
-        // (FTS5 doesn't support INSERT OR REPLACE properly)
-        if FileManager.default.fileExists(atPath: searchDBURL.path) {
-            Logging.ConsoleLogger.info("🗑️  Removing existing database for clean re-index...")
-            try FileManager.default.removeItem(at: searchDBURL)
+        if buildDocs {
+            try await runDocsIndexer(effectiveBase: effectiveBase)
         }
-
-        // Initialize search index
-        Logging.ConsoleLogger.info("🗄️  Initializing search database...")
-        let searchIndex = try await Search.Index(dbPath: searchDBURL)
-
-        // Check if Evolution directory exists
-        let hasEvolution = FileManager.default.fileExists(atPath: evolutionURL.path)
-        let evolutionDirToUse = hasEvolution ? evolutionURL : nil
-
-        if !hasEvolution {
-            Logging.ConsoleLogger.info("ℹ️  Swift Evolution directory not found, skipping proposals")
-            Logging.ConsoleLogger.info("   Run 'cupertino fetch --type evolution' to download proposals")
+        if buildPackages {
+            try await runPackagesIndexerSafely(effectiveBase: effectiveBase)
         }
-
-        // Check if Swift.org directory exists
-        let hasSwiftOrg = FileManager.default.fileExists(atPath: swiftOrgURL.path)
-        let swiftOrgDirToUse = hasSwiftOrg ? swiftOrgURL : nil
-
-        if !hasSwiftOrg {
-            Logging.ConsoleLogger.info("ℹ️  Swift.org directory not found, skipping Swift.org docs")
-            Logging.ConsoleLogger.info("   Run 'cupertino fetch --type swift' to download Swift.org documentation")
+        if buildSamples {
+            try await runSamplesIndexerSafely()
         }
-
-        // Check if Archive directory exists
-        let archiveURL = archiveDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
-            ?? effectiveBase.appendingPathComponent(Shared.Constants.Directory.archive)
-        let hasArchive = FileManager.default.fileExists(atPath: archiveURL.path)
-        let archiveDirToUse = hasArchive ? archiveURL : nil
-
-        if !hasArchive {
-            Logging.ConsoleLogger.info("ℹ️  Archive directory not found, skipping Apple Archive docs")
-            Logging.ConsoleLogger.info("   Run 'cupertino fetch --type archive' to download Apple Archive documentation")
-        }
-
-        // Check if HIG directory exists
-        let higURL = effectiveBase.appendingPathComponent(Shared.Constants.Directory.hig)
-        let hasHIG = FileManager.default.fileExists(atPath: higURL.path)
-        let higDirToUse = hasHIG ? higURL : nil
-
-        if !hasHIG {
-            Logging.ConsoleLogger.info("ℹ️  HIG directory not found, skipping Human Interface Guidelines")
-            Logging.ConsoleLogger.info("   Run 'cupertino fetch --type hig' to download HIG documentation")
-        }
-
-        // Check if docs have availability data
-        let hasAvailability = checkDocsHaveAvailability(docsDir: docsURL)
-        if !hasAvailability {
-            Logging.ConsoleLogger.info("")
-            Logging.ConsoleLogger.info("⚠️  Docs don't have availability data yet")
-            Logging.ConsoleLogger.info("   Run 'cupertino fetch --type availability' first for best results")
-            Logging.ConsoleLogger.info("   (sample-code and archive derive availability from docs)")
-            Logging.ConsoleLogger.info("")
-        }
-
-        // Build index (no metadata needed - just scans directories)
-        let builder = Search.IndexBuilder(
-            searchIndex: searchIndex,
-            metadata: nil,
-            docsDirectory: docsURL,
-            evolutionDirectory: evolutionDirToUse,
-            swiftOrgDirectory: swiftOrgDirToUse,
-            archiveDirectory: archiveDirToUse,
-            higDirectory: higDirToUse
-        )
-
-        // Note: Using a class to hold mutable state since @Sendable closures can't capture mutable vars
-        // The actor guarantees sequential execution, so this is thread-safe
-        final class ProgressTracker: @unchecked Sendable {
-            var lastPercent = 0.0
-        }
-        let tracker = ProgressTracker()
-
-        try await builder.buildIndex(clearExisting: clear) { processed, total in
-            let percent = Double(processed) / Double(total) * 100
-            if percent - tracker.lastPercent >= 5.0 {
-                Logging.ConsoleLogger.output("   \(String(format: "%.0f%%", percent)) complete (\(processed)/\(total))")
-                tracker.lastPercent = percent
-            }
-        }
-
-        // Show statistics
-        let docCount = try await searchIndex.documentCount()
-        let frameworks = try await searchIndex.listFrameworks()
-
-        Logging.ConsoleLogger.output("")
-        Logging.ConsoleLogger.info("✅ Search index built successfully!")
-        Logging.ConsoleLogger.info("   Total documents: \(docCount)")
-        Logging.ConsoleLogger.info("   Frameworks: \(frameworks.count)")
-        Logging.ConsoleLogger.info("   Database: \(searchDBURL.path)")
-        Logging.ConsoleLogger.info("   Size: \(formatFileSize(searchDBURL))")
-        Logging.ConsoleLogger.info("\n💡 Tip: Start the MCP server with '\(Shared.Constants.App.commandName) serve' to enable search")
     }
 
-    private func formatFileSize(_ url: URL) -> String {
+    // MARK: - Indexer dispatchers moved to SaveCommand+Indexers.swift (#244)
+
+    // MARK: - Preflight
+
+    private func runPreflightAndConfirm(
+        buildDocs: Bool,
+        buildPackages: Bool,
+        buildSamples: Bool
+    ) -> Bool {
+        let lines = Indexer.Preflight.preflightLines(
+            buildDocs: buildDocs,
+            buildPackages: buildPackages,
+            buildSamples: buildSamples,
+            baseDir: baseDir,
+            docsDir: docsDir,
+            samplesDir: samplesDir
+        )
+        Logging.ConsoleLogger.info("🔍 Preflight check for `cupertino save`\n")
+        for line in lines {
+            Logging.ConsoleLogger.info(line)
+        }
+        Logging.ConsoleLogger.info("")
+
+        if yes {
+            Logging.ConsoleLogger.info("--yes: skipping confirmation, continuing.\n")
+            return true
+        }
+        guard isatty(fileno(stdin)) != 0 else {
+            return true
+        }
+
+        Logging.ConsoleLogger.info("Continue? [Y/n] ")
+        guard let response = readLine() else { return true }
+        let normalized = response.trimmingCharacters(in: .whitespaces).lowercased()
+        return normalized.isEmpty || normalized == "y" || normalized == "yes"
+    }
+
+    // MARK: - Helpers
+
+    static func formatFileSize(_ url: URL) -> String {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int64
         else {
             return "unknown"
         }
-
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: size)
     }
+}
 
-    // MARK: - Remote Mode
+// MARK: - Remote mode
 
+/// `--remote` streams documentation from GitHub instead of building from
+/// a local corpus. Hasn't been lifted to `Indexer` yet because the
+/// `RemoteIndexer` interface is heavily UI-coupled (animated progress
+/// bar, framework-by-framework status). Stays here until that pipeline
+/// gets a callback-based shape.
+extension SaveCommand {
     private func runRemote() async throws {
         Logging.ConsoleLogger.info("🚀 Building Search Index from Remote\n")
 
-        // Determine paths
         let effectiveBase = baseDir.map { URL(fileURLWithPath: $0).expandingTildeInPath }
             ?? Shared.Constants.defaultBaseDirectory
-
         let searchDBURL = searchDB.map { URL(fileURLWithPath: $0).expandingTildeInPath }
             ?? effectiveBase.appendingPathComponent(Shared.Constants.FileName.searchDatabase)
-
         let stateFileURL = effectiveBase.appendingPathComponent("remote-save-state.json")
 
-        // Create fetcher and indexer
         let fetcher = GitHubFetcher()
         let indexer = RemoteIndexer(
             fetcher: fetcher,
@@ -204,51 +208,22 @@ struct SaveCommand: AsyncParsableCommand {
             appVersion: Shared.Constants.App.version
         )
 
-        // Check for resumable state
         if await indexer.hasResumableState() {
-            let state = await indexer.getState()
-            let completedCount = state.frameworksCompleted.count
-            let total = state.frameworksTotal
-            let framework = state.currentFramework ?? "unknown"
-
-            Logging.ConsoleLogger.info("📋 Found previous session")
-            Logging.ConsoleLogger.info("   Phase: \(state.phase.rawValue)")
-            Logging.ConsoleLogger.info("   Progress: \(completedCount)/\(total) frameworks")
-            if let current = state.currentFramework {
-                Logging.ConsoleLogger.info("   Current: \(current) (\(state.currentFileIndex)/\(state.filesTotal) files)")
-            }
-            Logging.ConsoleLogger.output("")
-
-            // Ask user if they want to resume
-            print("Resume from \(framework)? [Y/n] ", terminator: "")
-            if let response = readLine()?.lowercased(), response == "n" || response == "no" {
-                Logging.ConsoleLogger.info("🔄 Starting fresh...")
-                try await indexer.clearState()
-
-                // Delete existing database
-                if FileManager.default.fileExists(atPath: searchDBURL.path) {
-                    try FileManager.default.removeItem(at: searchDBURL)
-                }
-            } else {
-                Logging.ConsoleLogger.info("▶️  Resuming...")
-            }
-        } else {
-            // Delete existing database for fresh start
-            if FileManager.default.fileExists(atPath: searchDBURL.path) {
-                Logging.ConsoleLogger.info("🗑️  Removing existing database for clean re-index...")
-                try FileManager.default.removeItem(at: searchDBURL)
-            }
+            try await handleResumableRemoteSession(
+                indexer: indexer,
+                searchDBURL: searchDBURL
+            )
+        } else if FileManager.default.fileExists(atPath: searchDBURL.path) {
+            Logging.ConsoleLogger.info("🗑️  Removing existing database for clean re-index...")
+            try FileManager.default.removeItem(at: searchDBURL)
         }
 
-        // Initialize search index
         Logging.ConsoleLogger.info("🗄️  Initializing search database...")
         let searchIndex = try await Search.Index(dbPath: searchDBURL)
 
-        // Create progress display
         let progressDisplay = AnimatedProgress(barWidth: 20, useEmoji: true)
         let reporter = ProgressReporter(display: progressDisplay)
 
-        // Track stats - using a class to hold mutable state for @Sendable closures
         final class StatsTracker: @unchecked Sendable {
             var successCount = 0
             var errorCount = 0
@@ -256,12 +231,9 @@ struct SaveCommand: AsyncParsableCommand {
         let stats = StatsTracker()
         let startTime = Date()
 
-        // Run the indexer
         Logging.ConsoleLogger.output("")
-
         try await indexer.run(
             indexDocument: { uri, source, framework, title, content, jsonData in
-                // Index the document
                 try await searchIndex.indexDocument(
                     uri: uri,
                     source: source,
@@ -289,7 +261,6 @@ struct SaveCommand: AsyncParsableCommand {
             }
         )
 
-        // Show final statistics
         let elapsed = Date().timeIntervalSince(startTime)
         let docCount = try await searchIndex.documentCount()
         let frameworks = try await searchIndex.listFrameworks()
@@ -302,58 +273,40 @@ struct SaveCommand: AsyncParsableCommand {
         Logging.ConsoleLogger.info("   Indexed: \(stats.successCount) | Errors: \(stats.errorCount)")
         Logging.ConsoleLogger.info("   Time: \(Shared.Formatting.formatDuration(elapsed))")
         Logging.ConsoleLogger.info("   Database: \(searchDBURL.path)")
-        Logging.ConsoleLogger.info("   Size: \(formatFileSize(searchDBURL))")
-        Logging.ConsoleLogger.info("\n💡 Tip: Start the MCP server with '\(Shared.Constants.App.commandName) serve' to enable search")
+        Logging.ConsoleLogger.info("   Size: \(Self.formatFileSize(searchDBURL))")
+        Logging.ConsoleLogger.info(
+            "\n💡 Tip: Start the MCP server with '\(Shared.Constants.App.commandName) serve' to enable search"
+        )
     }
 
-    /// Check if docs directory has availability data by sampling a few JSON files
-    private func checkDocsHaveAvailability(docsDir: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: docsDir.path) else {
-            return false
+    private func handleResumableRemoteSession(
+        indexer: RemoteIndexer,
+        searchDBURL: URL
+    ) async throws {
+        let state = await indexer.getState()
+        let completedCount = state.frameworksCompleted.count
+        let total = state.frameworksTotal
+        let framework = state.currentFramework ?? "unknown"
+
+        Logging.ConsoleLogger.info("📋 Found previous session")
+        Logging.ConsoleLogger.info("   Phase: \(state.phase.rawValue)")
+        Logging.ConsoleLogger.info("   Progress: \(completedCount)/\(total) frameworks")
+        if let current = state.currentFramework {
+            Logging.ConsoleLogger.info(
+                "   Current: \(current) (\(state.currentFileIndex)/\(state.filesTotal) files)"
+            )
         }
+        Logging.ConsoleLogger.output("")
 
-        // Sample a few framework directories
-        guard let frameworks = try? FileManager.default.contentsOfDirectory(
-            at: docsDir,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return false
-        }
-
-        // Check first 3 frameworks for availability
-        var checkedCount = 0
-        var hasAvailabilityCount = 0
-
-        for frameworkDir in frameworks.prefix(5) {
-            guard frameworkDir.hasDirectoryPath else { continue }
-
-            // Find first JSON file in framework
-            if let files = try? FileManager.default.contentsOfDirectory(
-                at: frameworkDir,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) {
-                for file in files where file.pathExtension == "json" {
-                    checkedCount += 1
-
-                    // Check if file has availability key
-                    if let data = try? Data(contentsOf: file),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       json["availability"] != nil {
-                        hasAvailabilityCount += 1
-                    }
-
-                    break // Only check one file per framework
-                }
+        print("Resume from \(framework)? [Y/n] ", terminator: "")
+        if let response = readLine()?.lowercased(), response == "n" || response == "no" {
+            Logging.ConsoleLogger.info("🔄 Starting fresh...")
+            try await indexer.clearState()
+            if FileManager.default.fileExists(atPath: searchDBURL.path) {
+                try FileManager.default.removeItem(at: searchDBURL)
             }
-
-            if checkedCount >= 3 {
-                break
-            }
+        } else {
+            Logging.ConsoleLogger.info("▶️  Resuming...")
         }
-
-        // Consider "has availability" if at least 2 out of 3 sampled files have it
-        return checkedCount > 0 && hasAvailabilityCount >= (checkedCount / 2)
     }
 }

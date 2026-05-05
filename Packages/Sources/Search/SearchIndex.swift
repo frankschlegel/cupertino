@@ -27,7 +27,15 @@ extension Search {
         /// - 7: Previous version
         /// - 8: Added attributes column to docs_structured for @attribute indexing
         /// - 9: Added doc_symbols, doc_imports tables for SwiftSyntax AST indexing (#81)
-        public static let schemaVersion: Int32 = 10
+        /// - 10: Added synonyms column to framework_aliases
+        /// - 11: Added kind + symbols columns to docs_metadata (#192 section C). `kind` is
+        ///       the C1 taxonomy (`symbolPage`, `article`, ...) populated by
+        ///       `Search.Classify.kind(...)`. `symbols` is a denormalized text blob of
+        ///       symbol names written for SQL consumers.
+        /// - 12: Added `symbols` column to docs_fts (#192 section D) so bm25 can weight
+        ///       directly on AST-derived symbol names. BREAKING — FTS5 does not support
+        ///       ALTER TABLE ADD COLUMN, so existing DBs must be rebuilt.
+        public static let schemaVersion: Int32 = 12
 
         private var database: OpaquePointer?
         private let dbPath: URL
@@ -75,6 +83,14 @@ extension Search {
                 throw SearchError.sqliteError("Failed to open database: \(errorMessage)")
             }
 
+            // Auto-retry on SQLITE_BUSY for up to 5 seconds so concurrent
+            // `cupertino search` invocations against the same DB don't fail
+            // immediately on transient lock contention. SQLite default is 0
+            // (fail on first contention). 5 s covers idempotent open-time
+            // writes (`PRAGMA user_version`, `CREATE TABLE IF NOT EXISTS`)
+            // when a sibling process is doing the same.
+            sqlite3_busy_timeout(dbPointer, 5000)
+
             database = dbPointer
         }
 
@@ -95,6 +111,17 @@ extension Search {
         private func setSchemaVersion() async throws {
             guard let database else {
                 throw SearchError.databaseNotInitialized
+            }
+
+            // Skip the write if the on-disk version already matches. Every
+            // `Search.Index.init` (i.e. every `cupertino search`) used to issue
+            // this PRAGMA unconditionally; on the steady-state path where the
+            // version is already correct, that write produced nothing useful
+            // but did require a write lock on the DB. Two concurrent searches
+            // would then contend (SQLite is single-writer) and one would fail
+            // with `database is locked`.
+            if getSchemaVersion() == Self.schemaVersion {
+                return
             }
 
             let sql = "PRAGMA user_version = \(Self.schemaVersion)"
@@ -149,7 +176,7 @@ extension Search {
                     "Database schema version \(currentVersion) requires migration to version 5. " +
                         "This is a breaking change that adds the 'language' field. " +
                         "Please delete the database and run 'cupertino save' to rebuild: " +
-                        "rm ~/.cupertino/search.db && cupertino save"
+                        "rm \(dbPath.path) && cupertino save"
                 )
             }
 
@@ -169,6 +196,47 @@ extension Search {
             if currentVersion < 10 {
                 // Version 9 -> 10: Added synonyms column to framework_aliases
                 try await migrateToVersion10()
+            }
+
+            if currentVersion < 11 {
+                // Version 10 -> 11: Added kind + symbols columns to docs_metadata (#192 C).
+                // Uses ALTER TABLE ADD COLUMN — existing rows get the DEFAULT value
+                // ('unknown' for kind, NULL for symbols). A subsequent re-crawl
+                // repopulates via Classify.kind(...) and the AST pass.
+                try await migrateToVersion11()
+            }
+
+            if currentVersion < 12 {
+                // Version 11 -> 12: Added `symbols` column to docs_fts (#192 D) so
+                // bm25 can weight directly on AST-extracted symbol names. FTS5
+                // does not support ALTER TABLE ADD COLUMN on virtual tables, so
+                // this is a BREAKING change — existing DBs must be rebuilt.
+                throw SearchError.sqliteError(
+                    "Database schema version \(currentVersion) requires migration to version 12. " +
+                        "This is a breaking change that adds AST-derived symbols to the FTS index. " +
+                        "Please delete the database and run 'cupertino save' to rebuild: " +
+                        "rm \(dbPath.path) && cupertino save"
+                )
+            }
+        }
+
+        private func migrateToVersion11() async throws {
+            guard let database else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            let statements = [
+                "ALTER TABLE docs_metadata ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown';",
+                "ALTER TABLE docs_metadata ADD COLUMN symbols TEXT;",
+                "CREATE INDEX IF NOT EXISTS idx_kind ON docs_metadata(kind);",
+            ]
+
+            for sql in statements {
+                var errorPointer: UnsafeMutablePointer<CChar>?
+                defer { sqlite3_free(errorPointer) }
+                // Ignore error if column/index already exists — this keeps the
+                // migration idempotent across partial runs.
+                sqlite3_exec(database, sql, nil, nil, &errorPointer)
             }
         }
 
@@ -302,6 +370,7 @@ extension Search {
                 title,
                 content,
                 summary,
+                symbols,            -- #192 D: AST-extracted Swift symbol names; enables bm25 boost for type-name queries
                 tokenize='porter unicode61'
             );
 
@@ -310,6 +379,8 @@ extension Search {
                 source TEXT NOT NULL DEFAULT 'apple-docs',
                 framework TEXT NOT NULL,
                 language TEXT NOT NULL DEFAULT 'swift',
+                kind TEXT NOT NULL DEFAULT 'unknown',   -- #192 C1 taxonomy
+                symbols TEXT,                            -- #192 D denormalized symbol names
                 file_path TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 last_crawled INTEGER NOT NULL,
@@ -330,6 +401,7 @@ extension Search {
             CREATE INDEX IF NOT EXISTS idx_source ON docs_metadata(source);
             CREATE INDEX IF NOT EXISTS idx_framework ON docs_metadata(framework);
             CREATE INDEX IF NOT EXISTS idx_language ON docs_metadata(language);
+            CREATE INDEX IF NOT EXISTS idx_kind ON docs_metadata(kind);
             CREATE INDEX IF NOT EXISTS idx_source_type ON docs_metadata(source_type);
             CREATE INDEX IF NOT EXISTS idx_min_ios ON docs_metadata(min_ios);
             CREATE INDEX IF NOT EXISTS idx_min_macos ON docs_metadata(min_macos);
@@ -739,6 +811,141 @@ extension Search {
             }
         }
 
+        /// Extract AST symbols and imports from stored code examples and fold them
+        /// into the existing symbol/import tables + the denormalised `symbols` blob
+        /// on `docs_metadata` (#192 section D).
+        ///
+        /// Only Swift blocks are parsed. Non-Swift blocks are ignored — the
+        /// extractor relies on SwiftSyntax and would just produce empty results.
+        ///
+        /// Call this AFTER `indexCodeExamples(docUri:codeExamples:)` so the
+        /// referenced blocks are already durable. `docs_metadata.symbols` is
+        /// only written when there is at least one unique symbol name.
+        public func extractCodeExampleSymbols(
+            docUri: String,
+            codeExamples: [(code: String, language: String)]
+        ) async throws {
+            guard database != nil else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            let extractor = ASTIndexer.SwiftSourceExtractor()
+            var collectedSymbols: [ASTIndexer.ExtractedSymbol] = []
+            var collectedImports: [ASTIndexer.ExtractedImport] = []
+
+            for example in codeExamples where Self.isSwiftLanguage(example.language) {
+                let result = extractor.extract(from: example.code)
+                collectedSymbols.append(contentsOf: result.symbols)
+                collectedImports.append(contentsOf: result.imports)
+            }
+
+            // Append (do NOT clear) so declaration-derived symbols inserted by
+            // `indexStructuredDocument` survive. The structured-doc indexer
+            // owns the clear; this method only adds code-example findings on
+            // top.
+            if !collectedSymbols.isEmpty {
+                try await indexDocSymbols(docUri: docUri, symbols: collectedSymbols)
+            }
+            if !collectedImports.isEmpty {
+                try await indexDocImports(docUri: docUri, imports: collectedImports)
+            }
+            try await recomputeSymbolsBlob(docUri: docUri)
+        }
+
+        private func clearDocSymbols(docUri: String) async throws {
+            guard let database else { return }
+            let sql = "DELETE FROM doc_symbols WHERE doc_uri = ?;"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(database, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, (docUri as NSString).utf8String, -1, nil)
+            _ = sqlite3_step(stmt)
+        }
+
+        private func clearDocImports(docUri: String) async throws {
+            guard let database else { return }
+            let sql = "DELETE FROM doc_imports WHERE doc_uri = ?;"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(database, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, (docUri as NSString).utf8String, -1, nil)
+            _ = sqlite3_step(stmt)
+        }
+
+        /// Update the denormalised `symbols` column on `docs_metadata` with a
+        /// tab-separated, sorted list of unique symbol names. Silent no-op if
+        /// the `docs_metadata` row does not yet exist for `docUri`.
+        /// Recompute the denormalised `docs_metadata.symbols` and the
+        /// `docs_fts.symbols` columns from whatever is currently in
+        /// `doc_symbols` for `docUri`. Idempotent — produces the same output
+        /// regardless of how many `indexDocSymbols` calls landed first, and
+        /// regardless of duplicate rows in `doc_symbols`.
+        ///
+        /// Single source of truth: `doc_symbols.name`. Declaration-derived
+        /// names and code-example-derived names both flow into the same
+        /// table, so this method picks them up uniformly.
+        private func recomputeSymbolsBlob(docUri: String) async throws {
+            guard let database else {
+                throw SearchError.databaseNotInitialized
+            }
+
+            // Read all symbol names for this doc, dedupe, sort.
+            var names: Set<String> = []
+            do {
+                let sql = "SELECT name FROM doc_symbols WHERE doc_uri = ?;"
+                var stmt: OpaquePointer?
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_prepare_v2(database, sql, -1, &stmt, nil) == SQLITE_OK else {
+                    return
+                }
+                sqlite3_bind_text(stmt, 1, (docUri as NSString).utf8String, -1, nil)
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let ptr = sqlite3_column_text(stmt, 0) {
+                        names.insert(String(cString: ptr))
+                    }
+                }
+            }
+
+            // Update denormalised column on docs_metadata (tab-separated,
+            // human-readable for SQL consumers).
+            let metaSql = "UPDATE docs_metadata SET symbols = ? WHERE uri = ?;"
+            var metaStmt: OpaquePointer?
+            defer { sqlite3_finalize(metaStmt) }
+            if sqlite3_prepare_v2(database, metaSql, -1, &metaStmt, nil) == SQLITE_OK {
+                if names.isEmpty {
+                    sqlite3_bind_null(metaStmt, 1)
+                } else {
+                    let blob = names.sorted().joined(separator: "\t")
+                    sqlite3_bind_text(metaStmt, 1, (blob as NSString).utf8String, -1, nil)
+                }
+                sqlite3_bind_text(metaStmt, 2, (docUri as NSString).utf8String, -1, nil)
+                _ = sqlite3_step(metaStmt)
+            }
+
+            // Update FTS index column with a space-separated form so each
+            // name becomes its own token under unicode61 + porter.
+            let ftsSql = "UPDATE docs_fts SET symbols = ? WHERE uri = ?;"
+            var ftsStmt: OpaquePointer?
+            defer { sqlite3_finalize(ftsStmt) }
+            if sqlite3_prepare_v2(database, ftsSql, -1, &ftsStmt, nil) == SQLITE_OK {
+                let ftsBlob = names.isEmpty ? "" : names.sorted().joined(separator: " ")
+                sqlite3_bind_text(ftsStmt, 1, (ftsBlob as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(ftsStmt, 2, (docUri as NSString).utf8String, -1, nil)
+                _ = sqlite3_step(ftsStmt)
+            }
+        }
+
+        /// Classify a code-block language tag as Swift. Accepts the variants
+        /// Apple docs and the Swift book actually ship.
+        private static func isSwiftLanguage(_ language: String) -> Bool {
+            switch language.lowercased() {
+            case "swift", "swift-symbols", "swiftsymbols":
+                return true
+            default:
+                return false
+            }
+        }
+
         /// Search code examples
         public func searchCodeExamples(
             query: String,
@@ -950,10 +1157,12 @@ extension Search {
             // Determine language with heuristics fallback
             let effectiveLanguage = language ?? detectLanguage(from: content)
 
-            // Insert into FTS5 table (db should be deleted before full re-index)
+            // Insert into FTS5 table (db should be deleted before full re-index).
+            // `symbols` starts empty; the AST pass (#192 section D) UPDATEs it
+            // after doc_code_examples has been populated.
             let ftsSql = """
-            INSERT INTO docs_fts (uri, source, framework, language, title, content, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO docs_fts (uri, source, framework, language, title, content, summary, symbols)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '');
             """
 
             var statement: OpaquePointer?
@@ -991,12 +1200,17 @@ extension Search {
                 finalJsonData = minimalJSON
             }
 
-            // Insert metadata with JSON data and availability
+            // Classify (#192 C1). Direct `indexDocument` callers don't have a
+            // structured-kind hint, so the classifier uses `source` + `uri`.
+            let classifiedKind = Search.Classify.kind(source: source, uriPath: uri).rawValue
+
+            // Insert metadata with JSON data, availability, and kind (#192 C).
+            // `kind` appended at end so existing bind indexes 1-17 stay stable.
             let metaSql = """
             INSERT OR REPLACE INTO docs_metadata \
             (uri, source, framework, language, file_path, content_hash, last_crawled, word_count, \
             source_type, package_id, json_data, min_ios, min_macos, min_tvos, min_watchos, \
-            min_visionos, availability_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            min_visionos, availability_source, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
 
             var metaStatement: OpaquePointer?
@@ -1032,6 +1246,7 @@ extension Search {
             bindOptionalText(metaStatement, 15, minWatchOS)
             bindOptionalText(metaStatement, 16, minVisionOS)
             bindOptionalText(metaStatement, 17, availabilitySource)
+            sqlite3_bind_text(metaStatement, 18, (classifiedKind as NSString).utf8String, -1, nil)
 
             guard sqlite3_step(metaStatement) == SQLITE_DONE else {
                 let errorMessage = String(cString: sqlite3_errmsg(database))
@@ -1259,10 +1474,12 @@ extension Search {
                 throw SearchError.databaseNotInitialized
             }
 
-            // Insert into FTS5 table (db should be deleted before full re-index)
+            // Insert into FTS5 table (db should be deleted before full re-index).
+            // `symbols` starts empty; the AST pass (#192 section D) UPDATEs it
+            // after doc_code_examples has been populated.
             let ftsSql = """
-            INSERT INTO docs_fts (uri, source, framework, language, title, content, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO docs_fts (uri, source, framework, language, title, content, summary, symbols)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '');
             """
 
             var statement: OpaquePointer?
@@ -1295,12 +1512,21 @@ extension Search {
             let finalVisionOS = overrideMinVisionOS ?? jsonAvailability.visionOS
             let finalSource = overrideAvailabilitySource ?? jsonAvailability.source
 
-            // Insert metadata with json_data and availability columns
+            // Classify (#192 C1). Structured path has `page.kind` available —
+            // pass it plus the URI path for sample-code disambiguation.
+            let classifiedKind = Search.Classify.kind(
+                source: source,
+                structuredKind: page.kind.rawValue,
+                uriPath: uri
+            ).rawValue
+
+            // Insert metadata with json_data, availability, and kind (#192 C).
+            // `kind` appended at end so existing bind indexes 1-16 stay stable.
             let metaSql = """
             INSERT OR REPLACE INTO docs_metadata \
             (uri, source, framework, language, file_path, content_hash, last_crawled, word_count, \
             source_type, json_data, min_ios, min_macos, min_tvos, min_watchos, min_visionos, \
-            availability_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            availability_source, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
 
             var metaStatement: OpaquePointer?
@@ -1329,6 +1555,7 @@ extension Search {
             bindOptionalText(metaStatement, 14, finalWatchOS)
             bindOptionalText(metaStatement, 15, finalVisionOS)
             bindOptionalText(metaStatement, 16, finalSource)
+            sqlite3_bind_text(metaStatement, 17, (classifiedKind as NSString).utf8String, -1, nil)
 
             guard sqlite3_step(metaStatement) == SQLITE_DONE else {
                 let errorMessage = String(cString: sqlite3_errmsg(database))
@@ -1418,10 +1645,13 @@ extension Search {
                 throw SearchError.insertFailed("Structured insert: \(errorMessage)")
             }
 
-            // Extract symbols from declaration using SwiftSyntax (#81)
+            // Extract symbols from declaration using SwiftSyntax (#81). Re-running
+            // the indexer over the same uri must not double rows, so clear first.
             if let declaration = page.declaration?.code {
                 let extractor = ASTIndexer.SwiftSourceExtractor()
                 let result = extractor.extract(from: declaration)
+                try await clearDocSymbols(docUri: uri)
+                try await clearDocImports(docUri: uri)
                 if !result.symbols.isEmpty {
                     try await indexDocSymbols(docUri: uri, symbols: result.symbols)
                 }
@@ -1429,6 +1659,14 @@ extension Search {
                     try await indexDocImports(docUri: uri, imports: result.imports)
                 }
             }
+
+            // #192 D extension: keep `docs_metadata.symbols` + `docs_fts.symbols`
+            // in sync with whatever is in `doc_symbols` for this uri, regardless
+            // of whether the names came from the declaration line or a code
+            // example block. Earlier this pass only fired for code blocks, so
+            // declaration-only symbol pages (the common case) missed the bm25
+            // boost on type names.
+            try await recomputeSymbolsBlob(docUri: uri)
         }
 
         // MARK: - Symbol Indexing (#81)
@@ -2036,6 +2274,31 @@ extension Search {
         /// See Shared.Constants.SourcePrefix for available prefixes.
         private static let knownSourcePrefixes = Shared.Constants.SourcePrefix.allPrefixes
 
+        /// Apple-docs framework authority used as a HEURISTIC 1 tiebreak (#256).
+        ///
+        /// Only consulted when an apple-docs row already hit the exact-title boost
+        /// in HEURISTIC 1 — i.e. multiple frameworks have a top-level page whose
+        /// title equals the query (e.g. `Result` on Swift, Vision, Installer JS).
+        /// At that point BM25F has nothing useful to say about which framework is
+        /// canonical for the bare type name. The map nudges the canonical pick.
+        ///
+        /// Values are multipliers on `boost` (lower = stronger boost; FTS5 ranks
+        /// are negative so smaller multipliers push higher). Frameworks not in
+        /// the map default to 1.0 (no nudge).
+        ///
+        /// Kept narrow on purpose: only frameworks with an actual canonical-page
+        /// conflict whose resolution is uncontroversial. Adding a framework here
+        /// is an authority claim — be conservative.
+        private static let frameworkAuthority: [String: Double] = [
+            "swift": 0.5, // language types (Result, Task, String, ...)
+            "swiftui": 0.7, // primary UI framework
+            "foundation": 0.7, // primary system framework
+            "installer_js": 1.4, // niche packaging-script API
+            "webkitjs": 1.4, // legacy WebKit JS bindings
+            "javascriptcore": 1.2, // JS bridge
+            "devicemanagement": 1.2, // MDM payload schemas
+        ]
+
         /// Extract source prefix from query if present.
         /// - Returns: (detectedSource, remainingQuery)
         /// - Example: "swift-evolution actors" -> ("swift-evolution", "actors")
@@ -2197,6 +2460,19 @@ extension Search {
             let (_, queryForFTS) = extractAttributeFilters(queryToSearch)
             let sanitizedQuery = sanitizeFTS5Query(queryForFTS)
 
+            // Per-column bm25 weights (#181, #192 D): title dominates, symbols next,
+            // summary third, framework modest bonus. Body matches are common and
+            // easily dilute ranking; title and AST-derived symbols are the user's
+            // clearest intent signal. Column order matches the docs_fts
+            // declaration: uri, source, framework, language, title, content,
+            // summary, symbols.
+            //
+            // Rationale for symbols=5.0: code-derived names ("Observable", "Task",
+            // "@MainActor") are strong signals but slightly below a title-level
+            // match. Placed above summary (3.0) since semantic queries target
+            // type names directly; below title (10.0) since a user typing
+            // "Task" still wants the Swift Task struct first, not any doc that
+            // mentions it in a code block.
             var sql = """
             SELECT
                 f.uri,
@@ -2206,7 +2482,7 @@ extension Search {
                 f.summary,
                 m.file_path,
                 m.word_count,
-                bm25(docs_fts) as rank,
+                bm25(docs_fts, 1.0, 1.0, 2.0, 1.0, 10.0, 1.0, 3.0, 5.0) as rank,
                 COALESCE(s.kind, 'unknown') as kind,
                 m.min_ios,
                 m.min_macos,
@@ -2262,9 +2538,15 @@ extension Search {
                 sql += " AND m.min_visionos IS NOT NULL"
             }
 
-            // Fetch significantly more results so title/kind boosts can surface buried gems
-            // View protocol has poor BM25 but exact title match should bring it to top
-            let fetchLimit = min(limit * 20, 1000) // Fetch 20x more, max 1000
+            // Fetch significantly more results so title/kind boosts can surface buried gems.
+            // BM25 alone buries canonical type pages whose title carries Apple's
+            // " | Apple Developer Documentation" suffix (e.g. Swift `Task` struct
+            // lands around raw rank 241 for query "Task" because field-length
+            // normalization punishes the diluted title). The post-rank
+            // multipliers can pull such pages to #1, but only if they're in
+            // the candidate set. Floor at 1000 so smart-query fan-out (which
+            // passes limit=10) still over-fetches enough to include them.
+            let fetchLimit = min(max(limit * 20, 1000), 2000)
             sql += " ORDER BY rank LIMIT ?;"
 
             var statement: OpaquePointer?
@@ -2574,9 +2856,71 @@ extension Search {
                     }
 
                     // HEURISTIC 1: Short query exact title match (user knows what they want)
-                    // "View" searching for "View" protocol = almost certainly what they want
-                    if queryWords.count <= 3, titleLower == queryWords.joined(separator: " ") {
-                        boost *= 0.05 // 20x boost - user typed exact name
+                    // "View" searching for "View" protocol = almost certainly what they want.
+                    //
+                    // Compare against `titleWithoutSuffix` (boilerplate stripped) so the
+                    // ~28% of apple-docs pages whose `<title>` includes the
+                    // " | Apple Developer Documentation" suffix still trigger this boost.
+                    // Without this, BM25 field-length normalization buries canonical
+                    // type pages (`Task`, `View`, `URLSession`) under shorter clean-titled
+                    // siblings (kernel `task_*` C functions, devicemanagement `View`,
+                    // foundation `urlprotocol/task` property, etc.).
+                    //
+                    // The suffix itself is a signal: Apple writes
+                    // "<canonical type name> | Apple Developer Documentation" only for
+                    // the parent/landing page of a type. Sub-symbols (properties,
+                    // methods, nested types) get clean titles. Canonical pages still
+                    // lose raw BM25 to clean-titled siblings (their suffix dilutes
+                    // term frequency over field length), so the equal 20x boost here
+                    // wasn't enough to flip the order. Give canonical pages 50x and
+                    // clean-titled pages 20x so the canonical answer wins decisively.
+                    if queryWords.count <= 3, titleWithoutSuffix == queryLowerJoined {
+                        if titleLower != titleWithoutSuffix {
+                            boost *= 0.02 // 50x boost - canonical Apple-curated page
+                        } else {
+                            boost *= 0.05 // 20x boost - user typed exact name
+                        }
+
+                        // HEURISTIC 1.5: Tiebreak inside exact-title peers (#256)
+                        //
+                        // After the boost above fires, multiple apple-docs rows can
+                        // still tie — `Result` matches Swift's enum, Vision's
+                        // associated type ON `VisionRequest`, and Installer JS's
+                        // runtime type, and all three carry title "Result".
+                        // BM25F then decides among them, and BM25F has no opinion
+                        // about which framework is canonical for a bare type name.
+                        //
+                        // Two orthogonal signals separate canonical from peer:
+                        //
+                        // (1) URI simplicity. `documentation_FRAMEWORK_QUERY`
+                        //     exactly is the framework's top-level type page;
+                        //     anything deeper is a sub-symbol whose title happens
+                        //     to shadow a top-level type elsewhere.
+                        //
+                        // (2) Framework authority (`frameworkAuthority` map).
+                        //     Only consulted in this narrow branch — exact-title
+                        //     match in apple-docs.
+                        //
+                        // Out of scope: when corpus `kind` extraction improves,
+                        // an enum/struct/class/protocol tier slots ahead of these.
+                        // Today ~49% of apple-docs rows have kind=unknown
+                        // (depending on metadata extraction), so kind alone can't
+                        // separate canonical from sub-symbol.
+                        if uriLower.hasPrefix("apple-docs://") {
+                            let pathPart = uriLower
+                                .replacingOccurrences(of: "apple-docs://", with: "")
+                            let parts = pathPart.components(separatedBy: "/")
+                            if parts.count == 2 {
+                                let docPrefix = "documentation_\(parts[0])_"
+                                let queryAsIdent = queryLowerJoined
+                                    .replacingOccurrences(of: " ", with: "")
+                                if parts[1].hasPrefix(docPrefix),
+                                   String(parts[1].dropFirst(docPrefix.count)) == queryAsIdent {
+                                    boost *= 0.6 // ~1.7x: top-level type page beats sub-symbols
+                                }
+                            }
+                            boost *= Self.frameworkAuthority[framework.lowercased()] ?? 1.0
+                        }
                     }
                     // First word exact match (very strong signal)
                     else if !titleWords.isEmpty, !queryWords.isEmpty, titleWords[0] == queryWords[0] {
@@ -2665,7 +3009,14 @@ extension Search {
             if !symbolMatchURIs.isEmpty {
                 results = results.map { result in
                     if symbolMatchURIs.contains(result.uri) {
-                        // Boost rank for symbol matches (BM25 is negative, lower = better)
+                        // BM25 ranks are negative; lower (more negative) is better.
+                        // To make a symbol match rank better, multiply by a value
+                        // greater than 1 so the result is more negative. The
+                        // previous `* 0.3` made rank LESS negative (demotion),
+                        // which silently hurt canonical apple-docs pages whose
+                        // AST symbols were indexed in `doc_symbols`. Kernel C
+                        // pages have no AST symbols, so they kept their rank
+                        // and won the comparison.
                         return Search.Result(
                             id: result.id,
                             uri: result.uri,
@@ -2675,7 +3026,7 @@ extension Search {
                             summary: result.summary,
                             filePath: result.filePath,
                             wordCount: result.wordCount,
-                            rank: result.rank * 0.3, // 3x boost for symbol matches
+                            rank: result.rank * 3.0, // 3x boost: more-negative rank
                             availability: result.availability
                         )
                     }
@@ -2729,6 +3080,34 @@ extension Search {
                 results.removeAll { $0.uri == frameworkRoot.uri }
                 // Insert at top
                 results.insert(frameworkRoot, at: 0)
+            }
+
+            // (#256 follow-on) Force-include canonical type pages for top-tier frameworks.
+            //
+            // Plain BM25 buries some canonical type parent pages past the
+            // 1000-row fetchLimit (Foundation `URL` lands at raw rank 1017 on
+            // the v1.0 corpus, Foundation `Data` and Swift `Identifiable`
+            // land past 2500). Once outside the candidate set, no post-rank
+            // multiplier can save them. This is a separate problem from
+            // ranking inside the set: increasing fetchLimit alone can't fix
+            // it without paying a per-query cost on every search.
+            //
+            // Hand-fetch by URI shape `apple-docs://FRAMEWORK/documentation_FRAMEWORK_QUERY`
+            // for the same top-tier frameworks already given a positive
+            // `frameworkAuthority` weight (swift, swiftui, foundation). O(1)
+            // per probe; three probes per single-token query. Only fires for
+            // single-word, ASCII-identifier-shaped queries — same rough
+            // shape that HEURISTIC 1 + 1.5 already gate on.
+            if shouldFetchFrameworkRoot {
+                let canonicals = try await fetchCanonicalTypePages(query: query)
+                if !canonicals.isEmpty {
+                    let canonicalURIs = Set(canonicals.map(\.uri))
+                    results.removeAll { canonicalURIs.contains($0.uri) }
+                    // Preserve authority order from `canonicalTypePageFrameworks`
+                    // (swift > swiftui > foundation) — `fetchCanonicalTypePages`
+                    // returns hits in that order, so prepend en bloc.
+                    results.insert(contentsOf: canonicals, at: 0)
+                }
             }
 
             // (#81) Attach matching symbols to results that have them
@@ -2871,6 +3250,116 @@ extension Search {
             return uris
         }
 
+        /// Frameworks consulted by `fetchCanonicalTypePages` (#256 follow-on).
+        ///
+        /// Same set as the top-tier entries in `frameworkAuthority`. Kept
+        /// narrow on purpose — adding a framework here is a claim that its
+        /// `documentation_FRAMEWORK_TOKEN` page is reliably the canonical
+        /// answer when a user types `TOKEN` on its own.
+        private static let canonicalTypePageFrameworks: [String] = [
+            "swift", "swiftui", "foundation",
+        ]
+
+        /// Hand-fetch canonical type pages whose URI shape is
+        /// `apple-docs://FRAMEWORK/documentation_FRAMEWORK_QUERY` for top-tier
+        /// frameworks (#256 follow-on). See call site for rationale.
+        ///
+        /// Probes one URI per top-tier framework; non-existing rows return
+        /// nothing. Returned results carry a guaranteed-top rank so the
+        /// caller can dedup-and-prepend them without re-running the post-rank
+        /// math. Caller is responsible for not invoking this when the
+        /// effective source filter is something other than apple-docs.
+        private func fetchCanonicalTypePages(query: String) async throws -> [Search.Result] {
+            guard let database else { return [] }
+
+            // Same shape constraints as `Search.SmartQuery.isLikelySymbolQuery`:
+            // single token, length >= 2, ASCII identifier characters only.
+            // Multi-word queries don't have an obvious top-level apple-docs
+            // URI to probe and aren't the failure mode this addresses.
+            let trimmed = query.trimmingCharacters(in: .whitespaces)
+            guard trimmed.count >= 2,
+                  !trimmed.contains(" "),
+                  !trimmed.contains("."),
+                  trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") })
+            else {
+                return []
+            }
+            let queryLower = trimmed.lowercased()
+
+            // Query docs_metadata only — its `uri` is a TEXT PRIMARY KEY so the
+            // lookup is O(log n) on the implicit unique index. Joining
+            // `docs_fts` would force a virtual-table SCAN (FTS5 has no
+            // queryable index on `uri`), which costs ~3 s per probe on the
+            // v1.0 corpus. Title and summary come from `json_data` via
+            // `json_extract`; `abstract` is the structured-page summary in
+            // the canonical Apple JSON output.
+            let sql = """
+            SELECT
+                m.uri, m.source, m.framework,
+                json_extract(m.json_data, '$.title') AS title,
+                json_extract(m.json_data, '$.abstract') AS summary,
+                m.file_path, m.word_count,
+                m.min_ios, m.min_macos, m.min_tvos, m.min_watchos, m.min_visionos
+            FROM docs_metadata m
+            WHERE m.uri = ?
+            LIMIT 1;
+            """
+
+            var hits: [Search.Result] = []
+            for framework in Self.canonicalTypePageFrameworks {
+                let candidateURI = "apple-docs://\(framework)/documentation_\(framework)_\(queryLower)"
+
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+                    continue
+                }
+                sqlite3_bind_text(statement, 1, (candidateURI as NSString).utf8String, -1, nil)
+
+                if sqlite3_step(statement) == SQLITE_ROW {
+                    let uri = sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? ""
+                    let source = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+                    let frameworkName = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? ""
+                    let title = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? ""
+                    let summary = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
+                    let filePath = sqlite3_column_text(statement, 5).map { String(cString: $0) } ?? ""
+                    let wordCount = Int(sqlite3_column_int(statement, 6))
+
+                    var availabilityArray: [SearchPlatformAvailability] = []
+                    if let ios = sqlite3_column_text(statement, 7).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "iOS", introducedAt: ios))
+                    }
+                    if let macos = sqlite3_column_text(statement, 8).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "macOS", introducedAt: macos))
+                    }
+                    if let tvos = sqlite3_column_text(statement, 9).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "tvOS", introducedAt: tvos))
+                    }
+                    if let watchos = sqlite3_column_text(statement, 10).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "watchOS", introducedAt: watchos))
+                    }
+                    if let visionos = sqlite3_column_text(statement, 11).map({ String(cString: $0) }) {
+                        availabilityArray.append(SearchPlatformAvailability(name: "visionOS", introducedAt: visionos))
+                    }
+
+                    hits.append(Search.Result(
+                        uri: uri,
+                        source: source,
+                        framework: frameworkName.isEmpty ? framework : frameworkName,
+                        title: title,
+                        summary: summary,
+                        filePath: filePath,
+                        wordCount: wordCount,
+                        rank: -2000.0, // Guaranteed top, ahead of even framework-root rank (-1000)
+                        availability: availabilityArray.isEmpty ? nil : availabilityArray
+                    ))
+                }
+
+                sqlite3_finalize(statement)
+            }
+
+            return hits
+        }
+
         /// Fetch framework root page by exact query match (#81)
         /// If user searches "SwiftUI", directly fetch apple-docs://swiftui/documentation_swiftui
         /// This ensures framework roots always appear regardless of BM25 score
@@ -2884,14 +3373,21 @@ extension Search {
             // Construct expected framework root URI
             let frameworkRootURI = "apple-docs://\(queryLower)/documentation_\(queryLower)"
 
-            // Direct lookup by URI - join FTS for title/summary, metadata for availability
+            // Direct lookup by URI on docs_metadata's TEXT PRIMARY KEY (O(log n)
+            // via the implicit unique index). Joining `docs_fts` would force a
+            // virtual-table SCAN — FTS5 has no queryable index on `uri` — which
+            // costs ~5 s per call on the v1.0 corpus. Title and summary come
+            // from `json_data` via `json_extract`; `abstract` is the
+            // structured-page summary in the canonical Apple JSON output.
             let sql = """
             SELECT
-                f.uri, f.source, f.framework, f.title, f.summary, m.file_path, m.word_count,
+                m.uri, m.source, m.framework,
+                json_extract(m.json_data, '$.title') AS title,
+                json_extract(m.json_data, '$.abstract') AS summary,
+                m.file_path, m.word_count,
                 m.min_ios, m.min_macos, m.min_tvos, m.min_watchos, m.min_visionos
-            FROM docs_fts f
-            JOIN docs_metadata m ON f.uri = m.uri
-            WHERE f.uri = ?
+            FROM docs_metadata m
+            WHERE m.uri = ?
             LIMIT 1;
             """
 

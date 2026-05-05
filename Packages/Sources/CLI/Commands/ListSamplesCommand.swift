@@ -84,7 +84,7 @@ struct ListSamplesCommand: AsyncParsableCommand {
         Log.output("")
 
         if projects.isEmpty {
-            Log.output("No projects found. Run 'cupertino index' to index sample code.")
+            Log.output("No projects found. Run 'cupertino save --samples' to index sample code.")
             return
         }
 
@@ -150,7 +150,7 @@ struct ListSamplesCommand: AsyncParsableCommand {
         }
 
         if projects.isEmpty {
-            Log.output("_No projects found. Run `cupertino index` to index sample code._")
+            Log.output("_No projects found. Run `cupertino save --samples` to index sample code._")
             return
         }
 

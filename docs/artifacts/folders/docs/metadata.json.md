@@ -76,8 +76,13 @@ jq '.pages | to_entries | map(select(.value.framework == "swiftui"))' metadata.j
 
 ### Resume Crawl
 ```bash
-# Automatically uses metadata.json
-cupertino fetch --resume
+# Auto-resumes from metadata.json — no flag needed
+cupertino fetch
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --start-clean
 ```
 
 ### Force Recrawl (Ignore Metadata)
@@ -104,7 +109,8 @@ When re-crawling:
 
 ## Used By
 
-- `cupertino fetch --resume` - Resume functionality
+- `cupertino fetch` - Auto-resume picks up `crawlState` if `isActive: true` and start URL matches
+- `cupertino fetch --start-clean` - Wipes `crawlState` to force a fresh run
 - `cupertino save` - URL mapping for search results
 - Change detection on re-crawl
 

@@ -26,15 +26,24 @@ extension SampleIndex {
         /// File size in bytes
         public let size: Int
 
+        /// JSON-encoded array of `{line, raw, platforms[]}` capturing
+        /// every `@available(...)` attribute occurrence in this file.
+        /// Populated by `SampleIndexBuilder` during indexing (#228 phase 2).
+        /// nil when the file had no attributes (distinct from "annotation
+        /// didn't run" — annotation always runs for `.swift` files now).
+        public let availableAttrsJSON: String?
+
         public init(
             projectId: String,
             path: String,
-            content: String
+            content: String,
+            availableAttrsJSON: String? = nil
         ) {
             self.projectId = projectId
             self.path = path
             self.content = content
             size = content.utf8.count
+            self.availableAttrsJSON = availableAttrsJSON
 
             // Extract filename and folder from path
             let url = URL(fileURLWithPath: path)

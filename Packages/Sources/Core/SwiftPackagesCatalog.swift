@@ -1,12 +1,23 @@
-// This file loads the Swift Packages Library from JSON
-// Last updated: 2025-11-17
-// JSON file: CupertinoResources/swift-packages-catalog.json
-// Source: Swift Package Index + GitHub API
+// swiftlint:disable identifier_name
+// SwiftPackagesCatalog.swift
+//
+// Seed list of Swift package URLs, slimmed (#161 follow-up) from the original
+// 3.4 MB bundled JSON catalog to a compiled-in `[String]` of URLs. Rich
+// metadata (stars, description, license, etc.) is no longer part of the
+// bundled catalog — once v1.0.0 First Light ships `packages.db` as a
+// separately-distributed artifact, that metadata comes from the DB instead.
+//
+// The catalog retains the `SwiftPackageEntry` shape so existing consumers
+// compile unchanged; fields that used to come from the JSON (stars, license,
+// description, etc.) now default to `nil` / `0` / `false`.
 
 import Foundation
 import Resources
 
-/// Represents a Swift package from the Swift Package Index + GitHub
+/// One Swift package entry. Originally derived from a rich JSON catalog;
+/// after the #161 slimming, most fields default since only the URL is
+/// compiled in. Consumers that still need the metadata should fetch from
+/// GitHub or read from `packages.db` (v1.0.0+).
 public struct SwiftPackageEntry: Codable, Sendable {
     public let owner: String
     public let repo: String
@@ -23,13 +34,13 @@ public struct SwiftPackageEntry: Codable, Sendable {
         owner: String,
         repo: String,
         url: String,
-        description: String?,
-        stars: Int,
-        language: String?,
-        license: String?,
-        fork: Bool,
-        archived: Bool,
-        updatedAt: String?
+        description: String? = nil,
+        stars: Int = 0,
+        language: String? = nil,
+        license: String? = nil,
+        fork: Bool = false,
+        archived: Bool = false,
+        updatedAt: String? = nil
     ) {
         self.owner = owner
         self.repo = repo
@@ -42,117 +53,85 @@ public struct SwiftPackageEntry: Codable, Sendable {
         self.archived = archived
         self.updatedAt = updatedAt
     }
+
+    /// Parse a URL into an entry. Handles `https://github.com/<owner>/<repo>`
+    /// primarily; also tolerates `.git` suffixes and non-github hosts by
+    /// taking the last two path components as owner/repo.
+    static func fromURL(_ url: String) -> SwiftPackageEntry? {
+        guard let parsed = URL(string: url) else { return nil }
+        var path = parsed.path
+        if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return nil }
+        let owner = parts[parts.count - 2]
+        let repo = parts[parts.count - 1]
+        return SwiftPackageEntry(owner: owner, repo: repo, url: url)
+    }
 }
 
-/// JSON structure for Swift packages catalog
-struct SwiftPackagesCatalogJSON: Codable {
-    let version: String
-    let lastCrawled: String
-    let source: String
-    let count: Int
-    let packages: [SwiftPackageEntry]
-}
-
-/// Complete catalog of all Swift packages from Swift Package Index + GitHub
+/// Complete catalog of all Swift packages — URL list only post-#161.
+/// Keeps the async-actor-cached shape for API compatibility with existing
+/// consumers even though the data is now a compile-time constant.
 public enum SwiftPackagesCatalog {
-    /// Cached catalog data (thread-safe via actor isolation)
     private actor Cache {
-        var catalog: SwiftPackagesCatalogJSON?
+        var entries: [SwiftPackageEntry]?
 
-        func get() -> SwiftPackagesCatalogJSON? {
-            catalog
+        func get() -> [SwiftPackageEntry]? {
+            entries
         }
 
-        func set(_ newCatalog: SwiftPackagesCatalogJSON) {
-            catalog = newCatalog
+        func set(_ newEntries: [SwiftPackageEntry]) {
+            entries = newEntries
         }
     }
 
     private static let cache = Cache()
 
-    /// Load catalog from JSON resource
-    private static func loadCatalog() async -> SwiftPackagesCatalogJSON {
-        if let cached = await cache.get() {
-            return cached
-        }
-
-        guard let url = CupertinoResources.bundle.url(forResource: "swift-packages-catalog", withExtension: "json")
-        else {
-            fatalError("❌ swift-packages-catalog.json not found in Resources")
-        }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            let catalog = try decoder.decode(SwiftPackagesCatalogJSON.self, from: data)
-            await cache.set(catalog)
-            return catalog
-        } catch {
-            fatalError("❌ Failed to load swift-packages-catalog.json: \(error)")
-        }
+    private static func loadEntries() async -> [SwiftPackageEntry] {
+        if let cached = await cache.get() { return cached }
+        let entries = SwiftPackagesCatalogEmbedded.urls.compactMap(SwiftPackageEntry.fromURL)
+        await cache.set(entries)
+        return entries
     }
 
-    /// Total number of Swift packages
+    /// Total number of Swift packages in the bundled URL list.
     public static var count: Int {
-        get async {
-            await loadCatalog().count
-        }
+        get async { await loadEntries().count }
     }
 
-    /// Last crawled date
+    /// Last crawled date (stamped at catalog generation time).
     public static var lastCrawled: String {
-        get async {
-            await loadCatalog().lastCrawled
-        }
+        get async { SwiftPackagesCatalogEmbedded.lastCrawled }
     }
 
-    /// Catalog version
+    /// Catalog version marker. Fixed string post-slim; bumped when the URL
+    /// schema changes, not on every content refresh.
     public static var version: String {
-        get async {
-            await loadCatalog().version
-        }
+        get async { "url-only-1" }
     }
 
-    /// Data source description
+    /// Data source description.
     public static var source: String {
-        get async {
-            await loadCatalog().source
-        }
+        get async { "Bundled URL seed list" }
     }
 
-    /// All Swift package entries
+    /// All Swift package entries (URL-only; metadata fields default).
     public static var allPackages: [SwiftPackageEntry] {
-        get async {
-            await loadCatalog().packages
-        }
+        get async { await loadEntries() }
     }
 
-    /// Get packages by owner
+    /// Packages whose owner matches (case-insensitive).
     public static func packages(by owner: String) async -> [SwiftPackageEntry] {
         await allPackages.filter { $0.owner.lowercased() == owner.lowercased() }
     }
 
-    /// Search packages by repo name or description
+    /// Search packages by repo name (description is nil post-slim).
     public static func search(_ query: String) async -> [SwiftPackageEntry] {
-        let lowercasedQuery = query.lowercased()
-        return await allPackages.filter { package in
-            package.repo.lowercased().contains(lowercasedQuery) ||
-                (package.description?.lowercased().contains(lowercasedQuery) ?? false)
-        }
+        let q = query.lowercased()
+        return await allPackages.filter { $0.repo.lowercased().contains(q) }
     }
 
-    /// Get packages by license
-    public static func packages(license: String) async -> [SwiftPackageEntry] {
-        await allPackages.filter { $0.license?.lowercased() == license.lowercased() }
-    }
-
-    /// Get non-fork, non-archived packages with minimum stars
-    public static func activePackages(minStars: Int = 0) async -> [SwiftPackageEntry] {
-        await allPackages.filter { !$0.fork && !$0.archived && $0.stars >= minStars }
-    }
-
-    /// Get top packages by stars
-    public static func topPackages(limit: Int = 100) async -> [SwiftPackageEntry] {
-        await Array(allPackages.sorted { $0.stars > $1.stars }.prefix(limit))
-    }
+    // Removed post-#161: packages(license:), activePackages(minStars:), topPackages(limit:)
+    // rely on metadata no longer in the bundled catalog. Use packages.db (v1.0.0+)
+    // for metadata-driven queries.
 }

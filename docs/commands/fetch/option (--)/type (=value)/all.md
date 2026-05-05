@@ -19,8 +19,8 @@ Runs these fetch types **in parallel**:
 1. **docs** - Apple Developer Documentation
 2. **swift** - Swift.org Documentation
 3. **evolution** - Swift Evolution Proposals
-4. **packages** - Swift Package Metadata
-5. **code** - Apple Sample Code (requires `--authenticate`)
+4. **packages** - Swift Package Index metadata + GitHub source archives ([#217](https://github.com/mihaelamj/cupertino/issues/217))
+5. **code** - Apple Sample Code (requires Safari sign-in to `developer.apple.com` for cookie reuse)
 
 ## Default Settings
 
@@ -40,7 +40,7 @@ cupertino fetch --type all
 
 ### Fetch Everything Including Sample Code
 ```bash
-cupertino fetch --type all --authenticate
+cupertino fetch --type all
 ```
 
 ### Fetch Everything with Custom Settings
@@ -135,31 +135,35 @@ Example output with failures:
 
 ## Option Inheritance
 
-Options like `--max-pages`, `--force`, and `--resume` apply to all relevant fetch types:
+Options like `--max-pages`, `--force`, and `--start-clean` apply to all relevant fetch types:
 
 ```bash
 # Force re-fetch all types
 cupertino fetch --type all --force
 
-# Resume all interrupted fetches
-cupertino fetch --type all --resume
+# Discard saved sessions and start every type fresh
+cupertino fetch --type all --start-clean
 
 # Limit pages for web crawl types
 cupertino fetch --type all --max-pages 1000
 ```
 
+Resume is automatic across all types — interrupted fetches pick up where they left off on the next run with no flag.
+
 ## Sample Code Authentication
 
-To include sample code, add `--authenticate`:
+To include `--type code`, sign in to `https://developer.apple.com/` in Safari first. The fetcher reuses Safari's `myacinfo` cookie from the system cookie store:
 
 ```bash
-cupertino fetch --type all --authenticate
+cupertino fetch --type all
 ```
 
-Without this flag:
+Without a valid Safari sign-in:
 - Sample code fetch will fail
 - Other types will complete successfully
-- Warning displayed about missing authentication
+- Warning displayed about missing cookie
+
+Alternative: drop `code` and use `samples` (GitHub mirror, no auth required) for sample-code coverage.
 
 ## Use Cases
 
@@ -174,7 +178,7 @@ Without this flag:
 - **Most time-efficient** - Parallel execution saves time
 - **Network intensive** - Downloads ~1-2 GB of data
 - **Disk space** - Requires ~2-3 GB free space
-- **Resumable** - Can pause and resume with `--resume`
+- **Resumable** - Interrupted runs auto-resume on the next invocation; pass `--start-clean` to override
 - **Best for initial setup** - After initial fetch, use individual types for updates
 - **Authentication optional** - Only required for sample code
 - Compatible with `cupertino save` for search indexing all content
@@ -183,7 +187,7 @@ Without this flag:
 
 1. **Initial fetch** (one-time):
    ```bash
-   cupertino fetch --type all --authenticate
+   cupertino fetch --type all
    ```
 
 2. **Build search index**:
@@ -193,7 +197,7 @@ Without this flag:
 
 3. **Future updates** (individual types):
    ```bash
-   cupertino fetch --type docs --resume
+   cupertino fetch --type docs        # auto-resumes if interrupted previously
    cupertino fetch --type evolution
    cupertino save --clear
    ```

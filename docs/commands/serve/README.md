@@ -278,7 +278,7 @@ Read a document by URI. Returns the full document content in the requested forma
 
 ## Sample Code Tools
 
-If sample code is indexed (via `cupertino index`), the server provides these additional tools:
+If sample code is indexed (via `cupertino save --samples`), the server provides these additional tools:
 
 ### search_samples
 

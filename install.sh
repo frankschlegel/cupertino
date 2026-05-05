@@ -137,12 +137,7 @@ build_from_source() {
 
     if [[ -f ".build/release/cupertino" ]]; then
         cp ".build/release/cupertino" "$TEMP_DIR/cupertino"
-        # Copy resource bundle
-        if [[ -d ".build/arm64-apple-macosx/release/Cupertino_Resources.bundle" ]]; then
-            cp -R ".build/arm64-apple-macosx/release/Cupertino_Resources.bundle" "$TEMP_DIR/"
-        elif [[ -d ".build/x86_64-apple-macosx/release/Cupertino_Resources.bundle" ]]; then
-            cp -R ".build/x86_64-apple-macosx/release/Cupertino_Resources.bundle" "$TEMP_DIR/"
-        fi
+        # Catalogs are compiled into the binary as of #161 — no bundle to copy.
         return 0
     fi
     return 1
@@ -165,10 +160,7 @@ sudo mkdir -p /usr/local/bin
 sudo ditto "$TEMP_DIR/cupertino" "$INSTALL_PATH"
 sudo chmod +x "$INSTALL_PATH"
 
-# Install resource bundle if present
-if [[ -d "$TEMP_DIR/Cupertino_Resources.bundle" ]]; then
-    sudo ditto "$TEMP_DIR/Cupertino_Resources.bundle" "/usr/local/bin/Cupertino_Resources.bundle"
-fi
+# No resource bundle to install — catalogs are embedded in the binary (#161).
 
 # Verify installation
 if ! command -v cupertino &> /dev/null; then

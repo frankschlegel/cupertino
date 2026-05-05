@@ -51,6 +51,13 @@ extension Shared {
             /// Samples database file
             public static let samplesDatabase = "samples.db"
 
+            /// Package source + docs FTS index (separate from search.db; hidden feature)
+            public static let packagesIndexDatabase = "packages.db"
+
+            /// Stores the `databaseVersion` that was active when `setup` last succeeded.
+            /// Read on subsequent setup invocations to distinguish stale DBs from current ones (#168).
+            public static let setupVersionFile = ".setup-version"
+
             // MARK: Package Data Files
 
             /// Swift packages with GitHub stars data
@@ -61,6 +68,15 @@ extension Shared {
 
             /// User-selected packages file
             public static let selectedPackages = "selected-packages.json"
+
+            /// User-maintained exclusion list (flat array of "owner/repo" strings)
+            public static let excludedPackages = "excluded-packages.json"
+
+            /// Machine-written transitive closure of seeds+exclusions (cache)
+            public static let resolvedPackages = "resolved-packages.json"
+
+            /// Per-repo GitHub canonical-name cache (owner/repo → redirect target)
+            public static let canonicalOwnersCache = "canonical-owners.json"
 
             /// Package fetch checkpoint file
             public static let checkpoint = "checkpoint.json"
@@ -79,9 +95,14 @@ extension Shared {
 
         // MARK: - Default Paths
 
-        /// Default base directory path: ~/.cupertino
+        /// Default base directory path: ~/.cupertino, unless overridden by a
+        /// `cupertino.config.json` sitting next to the running executable
+        /// (see `Shared.BinaryConfig`, #211).
         public static var defaultBaseDirectory: URL {
-            FileManager.default.homeDirectoryForCurrentUser
+            if let override = Shared.BinaryConfig.shared.resolvedBaseDirectory {
+                return override
+            }
+            return FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(baseDirectoryName)
         }
 
@@ -140,6 +161,11 @@ extension Shared {
             defaultBaseDirectory.appendingPathComponent(FileName.searchDatabase)
         }
 
+        /// Default package-index database: ~/.cupertino/packages.db
+        public static var defaultPackagesDatabase: URL {
+            defaultBaseDirectory.appendingPathComponent(FileName.packagesIndexDatabase)
+        }
+
         // MARK: - Application Info
 
         public enum App {
@@ -156,14 +182,22 @@ extension Shared {
             public static let userAgent = "CupertinoCrawler/1.0"
 
             /// Current version
-            public static let version = "0.10.0"
+            public static let version = "1.0.0"
 
-            /// Database version - separate from CLI version, only bump when schema/content changes
-            public static let databaseVersion = "0.9.0"
+            /// Database version - separate from CLI version, only bump when schema/content changes.
+            /// Controls the cupertino-docs release tag that `cupertino setup` downloads from.
+            public static let databaseVersion = "1.0.0"
+
+            /// Base URL for cupertino-docs release downloads. As of v1.0.0 the
+            /// single `cupertino-databases-vX.zip` artifact bundles search.db,
+            /// samples.db, and packages.db — earlier versions split packages.db
+            /// into a separate `mihaelamj/cupertino-packages` companion repo
+            /// which is now deprecated.
+            public static let docsReleaseBaseURL = "https://github.com/mihaelamj/cupertino-docs/releases/download"
 
             /// Approximate database zip file size for progress display when Content-Length is unknown.
-            /// NOTE: Update this after each database release (current: v0.9.0 ~400MB)
-            public static let approximateZipSize: Int64 = 400 * 1024 * 1024
+            /// v1.0.0 bundle is ~833 MB (search.db + samples.db + packages.db, DEFLATE-compressed).
+            public static let approximateZipSize: Int64 = 850 * 1024 * 1024
         }
 
         // MARK: - Display Names
@@ -428,8 +462,15 @@ extension Shared {
             /// Apple Human Interface Guidelines
             public static let appleHIG = "https://developer.apple.com/design/human-interface-guidelines/"
 
-            /// Apple Sample Code List
+            /// Apple Sample Code List (rendered HTML page)
             public static let appleSampleCode = "https://developer.apple.com/documentation/samplecode/"
+
+            /// Apple Sample Code List (raw JSON catalog).
+            /// Used by `SampleCodeDownloader.writeCatalogJSON` to dump fresh
+            /// metadata next to the downloaded zips so `cupertino save`
+            /// indexes from on-disk freshness instead of the embedded
+            /// snapshot (#214).
+            public static let appleSampleCodeJSON = "https://developer.apple.com/tutorials/data/documentation/samplecode.json"
 
             /// Apple Developer Account
             public static let appleDeveloperAccount = "https://developer.apple.com/account/"
@@ -508,8 +549,8 @@ extension Shared {
             /// Swift Evolution proposal number
             public static let seProposalNumber = #"^(?:SE-)?(\d{4})"#
 
-            /// Swift Evolution status in markdown
-            public static let seStatus = #"\* Status: \*\*([^\*]+)\*\*"#
+            /// Swift Evolution status in markdown (supports both "* Status:" and "- Status:")
+            public static let seStatus = #"[\*\-] Status:\s*\*\*([^\*]+)\*\*"#
 
             /// HTML pre/code block with language
             public static let htmlCodeBlockWithLanguage =
@@ -517,6 +558,9 @@ extension Shared {
 
             /// Swift Evolution reference (SE-NNNN)
             public static let seReference = #"(SE-\d+)"#
+
+            /// Swift Evolution or Swift Testing reference (SE-NNNN or ST-NNNN)
+            public static let evolutionReference = #"((?:SE|ST)-\d+)"#
         }
 
         // MARK: - HTTP Headers
@@ -623,7 +667,7 @@ extension Shared {
 
             /// Swift Evolution template description
             public static let swiftEvolutionTemplateDescription =
-                "Access Swift Evolution proposals by ID (e.g., SE-0001)"
+                "Access Swift Evolution proposals by ID (e.g., SE-0001 or ST-0001)"
 
             // MARK: MIME Types
 
@@ -634,6 +678,9 @@ extension Shared {
 
             /// Swift Evolution proposal ID prefix
             public static let sePrefix = "SE-"
+
+            /// Swift Testing proposal ID prefix
+            public static let stPrefix = "ST-"
 
             // MARK: Tool Descriptions
 
@@ -1025,9 +1072,57 @@ extension Shared {
             /// Rationale: Respectful crawling of Apple's archive servers
             public static let archivePage: Duration = .milliseconds(500)
 
-            /// Pause before retry after failure
-            /// Rationale: Allow transient issues to resolve
+            /// Base pause before retry after failure. Used as the base for
+            /// exponential backoff (1s → 3s → 9s …) so successive retries
+            /// span enough time to outlast typical Apple JSON-API rate-limit
+            /// bursts (#209). The original 2026-04-30 recrawl saw 192/360k
+            /// pages fail at fixed 1-second intervals; a retry minutes later
+            /// recovered 187/192 — confirming the failures were rate-limit
+            /// windows the fixed delay never escaped.
             public static let retryPause: Duration = .seconds(1)
+
+            /// Multiplier for exponential retry backoff (#209). With base
+            /// 1s and multiplier 3, attempts wait 1s, 3s, 9s — total 13s of
+            /// retry-window coverage instead of the previous 3s.
+            public static let retryBackoffMultiplier: Double = 3.0
+
+            /// Cap on a single retry sleep (#209). Prevents runaway sleeps
+            /// if maxRetries is ever bumped well past 3.
+            public static let retryBackoffMax: Duration = .seconds(30)
+
+            /// Compute the sleep duration for the n-th retry (1-indexed):
+            /// `base * multiplier^(attempt - 1)`, capped at `retryBackoffMax`.
+            ///
+            /// With defaults (base 1s, multiplier 3): attempt 1 → 1s,
+            /// attempt 2 → 3s, attempt 3 → 9s. Total wait across 3 retries:
+            /// 13s — long enough to outlast typical Apple rate-limit bursts
+            /// (#209). Returns `.zero` for attempt < 1 so the helper is
+            /// safe to call unconditionally.
+            public static func retryBackoff(
+                attempt: Int,
+                base: Duration = retryPause,
+                multiplier: Double = retryBackoffMultiplier,
+                maxDelay: Duration = retryBackoffMax
+            ) -> Duration {
+                guard attempt >= 1 else { return .zero }
+
+                // Reduce the base Duration to a Double of seconds so we can
+                // multiply by `multiplier^(attempt-1)`. Foundation's Duration
+                // doesn't expose direct fractional-second multiplication.
+                let parts = base.components
+                let baseSeconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+                let factor = pow(multiplier, Double(attempt - 1))
+                let computed = baseSeconds * factor
+
+                let capParts = maxDelay.components
+                let capSeconds = Double(capParts.seconds) + Double(capParts.attoseconds) / 1e18
+
+                let bounded = min(computed, capSeconds)
+                let wholeSeconds = Int64(bounded)
+                let fractional = bounded - Double(wholeSeconds)
+                let attoseconds = Int64(fractional * 1e18)
+                return Duration(secondsComponent: wholeSeconds, attosecondsComponent: attoseconds)
+            }
         }
 
         /// Timeout values for operations
@@ -1094,6 +1189,18 @@ extension Shared {
 
             /// Repository name
             public static let repo = "swift-evolution"
+
+            /// Subdirectory path for Swift Evolution proposals
+            public static let proposalsSubdirectory = "proposals"
+
+            /// Subdirectory path for Swift Testing proposals
+            public static let testingSubdirectory = "proposals/testing"
+
+            /// Proposal ID prefix for Swift Evolution
+            public static let seIDPrefix = "SE"
+
+            /// Proposal ID prefix for Swift Testing
+            public static let stIDPrefix = "ST"
         }
 
         // MARK: - Priority Packages
@@ -1235,8 +1342,13 @@ extension Shared {
         public enum Limit {
             // MARK: Crawler Limits
 
-            /// Default maximum number of pages to crawl
-            public static let defaultMaxPages = 15000
+            /// Default maximum number of pages to crawl. Effectively uncapped —
+            /// 1 million is well above Apple's full developer docs (~70k pages),
+            /// Swift Evolution (~500), Swift.org, HIG, and the archive combined,
+            /// so a default crawl runs to queue exhaustion rather than hitting
+            /// an artificial limit. Override with `--max-pages` if you need a
+            /// smaller bounded crawl for testing.
+            public static let defaultMaxPages = 1000000
 
             // MARK: File Size Limits
 

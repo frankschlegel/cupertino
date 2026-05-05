@@ -68,11 +68,8 @@ public enum ArchiveGuideCatalog {
             return
         }
 
-        // Load bundled catalog and create user file with required guides
-        guard let bundleURL = CupertinoResources.bundle.url(
-            forResource: "archive-guides-catalog",
-            withExtension: "json"
-        ) else {
+        // Load embedded catalog and create user file with required guides (#161)
+        guard let data = CupertinoResources.jsonData(named: "archive-guides-catalog") else {
             return
         }
 
@@ -83,8 +80,6 @@ public enum ArchiveGuideCatalog {
                 try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
             }
 
-            // Load bundled catalog and extract required guides
-            let data = try Data(contentsOf: bundleURL)
             let catalog = try JSONDecoder().decode(ArchiveGuidesCatalogJSON.self, from: data)
             let requiredGuides = catalog.guides.filter(\.required)
 
@@ -130,17 +125,13 @@ public enum ArchiveGuideCatalog {
         }
     }
 
-    /// Load guides from bundled catalog JSON (used for fallback)
+    /// Load guides from embedded catalog JSON (used for fallback).
     private static func loadBundledCatalogPaths() -> [String]? {
-        guard let url = CupertinoResources.bundle.url(
-            forResource: "archive-guides-catalog",
-            withExtension: "json"
-        ) else {
+        guard let data = CupertinoResources.jsonData(named: "archive-guides-catalog") else {
             return nil
         }
 
         do {
-            let data = try Data(contentsOf: url)
             let json = try JSONDecoder().decode(ArchiveGuidesCatalogJSON.self, from: data)
             return json.guides.map(\.path)
         } catch {
@@ -332,17 +323,13 @@ public enum ArchiveGuideCatalog {
         }
     }
 
-    /// Load required guide paths from bundled catalog (for testing)
+    /// Load required guide paths from embedded catalog (used by tests).
     public static func getRequiredGuidePaths() -> [String] {
-        guard let url = CupertinoResources.bundle.url(
-            forResource: "archive-guides-catalog",
-            withExtension: "json"
-        ) else {
+        guard let data = CupertinoResources.jsonData(named: "archive-guides-catalog") else {
             return []
         }
 
         do {
-            let data = try Data(contentsOf: url)
             let json = try JSONDecoder().decode(ArchiveGuidesCatalogJSON.self, from: data)
             return json.guides.filter(\.required).map(\.path)
         } catch {

@@ -10,9 +10,27 @@ cupertino save [options]
 
 ## Description
 
-The `save` command builds a Full-Text Search (FTS5) SQLite database from previously fetched documentation. This enables fast, efficient searching across all downloaded documentation.
+The `save` command builds the local SQLite databases that back `cupertino`'s search and `ask` commands. As of [#231](https://github.com/mihaelamj/cupertino/issues/231) it covers all three databases via scope flags:
+
+| Flag | Builds | Source |
+|---|---|---|
+| `--docs` | `search.db` | `~/.cupertino/docs/`, `swift-evolution/`, `swift-org/`, `archive/`, `hig/` |
+| `--packages` | `packages.db` | `~/.cupertino/packages/<owner>/<repo>/` |
+| `--samples` | `samples.db` | `~/.cupertino/sample-code/*.zip` |
+
+When **no scope flag is passed**, `save` builds **all three** in fixed order (docs → packages → samples). Each step skips gracefully with an info log if its source directory is missing.
+
+The `--samples` form replaces the old `cupertino index` command (removed in #231). No backwards-compat alias — pre-1.0 clean break.
 
 ## Options
+
+### Scope (combinable)
+
+- `--docs` — build `search.db` only
+- `--packages` — build `packages.db` only
+- `--samples` — build `samples.db` only (replaces `cupertino index`, [#231](https://github.com/mihaelamj/cupertino/issues/231))
+
+### Docs-build options
 
 - [--remote](option%20%28--%29/remote/) - **Stream from GitHub** (instant setup, no local files)
 - [--base-dir](option%20%28--%29/base-dir.md) - Base directory (auto-fills all directories from standard structure)
@@ -20,31 +38,46 @@ The `save` command builds a Full-Text Search (FTS5) SQLite database from previou
 - [--evolution-dir](option%20%28--%29/evolution-dir.md) - Directory containing Swift Evolution proposals
 - [--swift-org-dir](option%20%28--%29/swift-org-dir.md) - Directory containing Swift.org documentation
 - [--packages-dir](option%20%28--%29/packages-dir.md) - Directory containing package READMEs
+- `--archive-dir` - Directory containing Apple Archive documentation (legacy programming guides like Core Animation, Quartz 2D, KVO/KVC)
 - [--metadata-file](option%20%28--%29/metadata-file.md) - Path to metadata.json file
 - [--search-db](option%20%28--%29/search-db.md) - Output path for search database
 - [--clear](option%20%28--%29/clear.md) - Clear existing index before building
 
+### Samples-build options ([#231](https://github.com/mihaelamj/cupertino/issues/231))
+
+- `--samples-dir <path>` — sample-code source directory (defaults to `~/.cupertino/sample-code/`)
+- `--samples-db <path>` — `samples.db` output path
+- `--force` — re-index every sample even if already in the DB
+
 ## Examples
 
-### Quick Setup (Recommended)
-Stream documentation from GitHub - no crawling needed:
+### Build everything (default)
+```bash
+cupertino save                          # docs → packages → samples, in order
+```
+
+### Quick docs setup via remote stream
 ```bash
 cupertino save --remote
 ```
 
-### Build Index from Default Locations
+### Scoped builds
 ```bash
-cupertino save
+cupertino save --docs                   # search.db only
+cupertino save --packages               # packages.db only
+cupertino save --samples                # samples.db only (was: cupertino index)
+cupertino save --packages --samples     # both packages and samples, skip docs
 ```
 
-### Build Index from Custom Documentation
+### Custom paths
 ```bash
-cupertino save --docs-dir ./my-docs --search-db ./my-search.db
+cupertino save --docs --docs-dir ./my-docs --search-db ./my-search.db
+cupertino save --samples --samples-dir ~/my-samples --samples-db ~/my-samples.db
 ```
 
-### Rebuild Index (Clear and Rebuild)
+### Rebuild docs index
 ```bash
-cupertino save --clear
+cupertino save --docs --clear
 ```
 
 ### Index Multiple Sources

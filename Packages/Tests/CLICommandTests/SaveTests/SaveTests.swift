@@ -9,8 +9,8 @@ import TestSupport
 
 // MARK: - Save Command Tests
 
-/// Tests for the `cupertino save` command
-/// Verifies search index building, framework filtering, and empty directory handling
+// Tests for the `cupertino save` command
+// Verifies search index building, framework filtering, and empty directory handling
 
 @Suite("Save Command Tests", .serialized)
 struct SaveCommandTests {
@@ -26,9 +26,9 @@ struct SaveCommandTests {
         print("🧪 Test: Build search index")
 
         // First, fetch a page to have data
-        let config = Shared.Configuration(
+        let config = try Shared.Configuration(
             crawler: Shared.CrawlerConfiguration(
-                startURL: URL(string: "https://developer.apple.com/documentation/swift")!,
+                startURL: #require(URL(string: "https://developer.apple.com/documentation/swift")),
                 maxPages: 1,
                 maxDepth: 0,
                 outputDirectory: tempDir
@@ -81,9 +81,9 @@ struct SaveCommandTests {
         print("🧪 Test: Search with framework filter")
 
         // Fetch and save
-        let config = Shared.Configuration(
+        let config = try Shared.Configuration(
             crawler: Shared.CrawlerConfiguration(
-                startURL: URL(string: "https://developer.apple.com/documentation/swift")!,
+                startURL: #require(URL(string: "https://developer.apple.com/documentation/swift")),
                 maxPages: 1,
                 maxDepth: 0,
                 outputDirectory: tempDir
@@ -229,8 +229,8 @@ struct SaveCommandTests {
         try FileManager.default.createDirectory(at: swiftDir, withIntermediateDirectories: true)
 
         // Create test JSON files (StructuredDocumentationPage format)
-        let arrayPage = StructuredDocumentationPage(
-            url: URL(string: "https://developer.apple.com/documentation/swift/array")!,
+        let arrayPage = try StructuredDocumentationPage(
+            url: #require(URL(string: "https://developer.apple.com/documentation/swift/array")),
             title: "Array",
             kind: .struct,
             source: .appleWebKit,
@@ -240,8 +240,8 @@ struct SaveCommandTests {
         let arrayDoc = swiftDir.appendingPathComponent("array.json")
         try JSONCoding.encode(arrayPage, to: arrayDoc)
 
-        let dictPage = StructuredDocumentationPage(
-            url: URL(string: "https://developer.apple.com/documentation/swift/dictionary")!,
+        let dictPage = try StructuredDocumentationPage(
+            url: #require(URL(string: "https://developer.apple.com/documentation/swift/dictionary")),
             title: "Dictionary",
             kind: .struct,
             source: .appleWebKit,
@@ -255,8 +255,8 @@ struct SaveCommandTests {
         let swiftuiDir = tempDir.appendingPathComponent("docs/swiftui")
         try FileManager.default.createDirectory(at: swiftuiDir, withIntermediateDirectories: true)
 
-        let viewPage = StructuredDocumentationPage(
-            url: URL(string: "https://developer.apple.com/documentation/swiftui/view")!,
+        let viewPage = try StructuredDocumentationPage(
+            url: #require(URL(string: "https://developer.apple.com/documentation/swiftui/view")),
             title: "View",
             kind: .protocol,
             source: .appleWebKit,
@@ -309,8 +309,8 @@ struct SaveCommandTests {
         let nestedDir = tempDir.appendingPathComponent("docs/foundation/collections")
         try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
 
-        let nestedPage = StructuredDocumentationPage(
-            url: URL(string: "https://developer.apple.com/documentation/foundation/nsarray")!,
+        let nestedPage = try StructuredDocumentationPage(
+            url: #require(URL(string: "https://developer.apple.com/documentation/foundation/nsarray")),
             title: "NSArray",
             kind: .class,
             source: .appleWebKit,
@@ -343,71 +343,22 @@ struct SaveCommandTests {
 
     // MARK: - Sample Code Catalog Tests
 
-    @Test("Index sample code catalog from bundled resources")
-    func indexSampleCodeCatalog() async throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cupertino-sample-code-test-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        print("🧪 Test: Index sample code catalog")
-
-        let searchDbPath = tempDir.appendingPathComponent("search.db")
-        let searchIndex = try await Search.Index(dbPath: searchDbPath)
-
-        let builder = Search.IndexBuilder(
-            searchIndex: searchIndex,
-            metadata: nil,
-            docsDirectory: tempDir,
-            evolutionDirectory: nil,
-            indexSampleCode: true
-        )
-
-        try await builder.buildIndex()
-
-        // Verify sample code was indexed
-        let sampleResults = try await searchIndex.searchSampleCode(query: "ARKit", limit: 10)
-        #expect(!sampleResults.isEmpty, "Should find sample code entries")
-
-        let totalSamples = try await searchIndex.sampleCodeCount()
-        #expect(totalSamples > 0, "Should have indexed sample code catalog")
-        #expect(totalSamples >= 500, "Should have hundreds of sample code entries")
-
-        print("   ✅ Indexed \(totalSamples) sample code entries")
-        print("   ✅ Sample code indexing test passed!")
-    }
-
-    @Test("Sample code catalog respects framework filter")
-    func sampleCodeFrameworkFilter() async throws {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cupertino-sample-filter-test-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        print("🧪 Test: Sample code framework filter")
-
-        let searchDbPath = tempDir.appendingPathComponent("search.db")
-        let searchIndex = try await Search.Index(dbPath: searchDbPath)
-
-        let builder = Search.IndexBuilder(
-            searchIndex: searchIndex,
-            metadata: nil,
-            docsDirectory: tempDir,
-            evolutionDirectory: nil,
-            indexSampleCode: true
-        )
-
-        try await builder.buildIndex()
-
-        // Search for ARKit samples
-        let arkitSamples = try await searchIndex.searchSampleCode(query: "tracking", framework: "ARKit", limit: 10)
-
-        // All results should be ARKit
-        for sample in arkitSamples {
-            #expect(sample.framework == "ARKit", "Filtered results should match framework")
-        }
-
-        print("   ✅ Sample code framework filter working")
-        print("   ✅ Framework filter test passed!")
-    }
+    // The two sample-code SaveTests cases that lived here previously
+    // ("Index sample code catalog from bundled resources" + "Sample code
+    // catalog respects framework filter") assumed `SampleCodeCatalog`
+    // always returned ~600 entries from the embedded blob. After #215
+    // deleted that blob, the catalog only exists when
+    // `<sample-code-dir>/catalog.json` is present, so a CI machine with
+    // no fetched data sees 0 entries and the tests fail.
+    //
+    // Replacement coverage:
+    //  - Disk-fixture loading + format invariants:
+    //    `Tests/CoreTests/SampleCodeCatalogTests.swift`
+    //  - Save→search-of-sample-code integration: deferred until we have a
+    //    test seam for injecting a sample-code dir into `SampleCodeCatalog`
+    //    (the cached load currently reads from
+    //    `Shared.Constants.defaultSampleCodeDirectory` directly, so a test
+    //    can't sandbox without polluting user data).
 
     // MARK: - Package Catalog Tests
 
@@ -469,11 +420,13 @@ struct SaveCommandTests {
 
         if let pkg = results.first {
             #expect(pkg.owner == "apple" || pkg.owner == "Apple", "Should have correct owner")
-            #expect(pkg.stars > 0, "Should have star count")
             #expect(pkg.repositoryURL.contains("github.com"), "Should have repository URL")
+            // Star count is no longer carried by the embedded URL-only catalog
+            // (#161 slimming). It returns to the DB once v1.0.0's packages.db
+            // distribution lands and the indexer pulls stars from there.
         }
 
-        print("   ✅ Package metadata verified")
+        print("   ✅ Package metadata verified (post-#161 URL-only catalog)")
         print("   ✅ Package metadata test passed!")
     }
 }

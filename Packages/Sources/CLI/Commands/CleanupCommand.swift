@@ -28,7 +28,7 @@ struct CleanupCommand: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: "Sample code directory to clean (default: ~/.cupertino/sample-code)"
+        help: "Sample code directory to clean (default: \(Shared.Constants.defaultSampleCodeDirectory.path))"
     )
     var sampleCodeDir: String?
 

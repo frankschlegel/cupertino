@@ -135,7 +135,7 @@ public actor ServiceContainer {
         operation: (SampleSearchService) async throws -> T
     ) async throws -> T {
         guard PathResolver.exists(dbPath) else {
-            throw ToolError.noData("Sample database not found at \(dbPath.path). Run 'cupertino index' to build the index.")
+            throw ToolError.noData("Sample database not found at \(dbPath.path). Run 'cupertino save --samples' to build the index.")
         }
 
         let service = try await SampleSearchService(dbPath: dbPath)

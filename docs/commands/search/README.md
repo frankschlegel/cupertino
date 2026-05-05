@@ -10,7 +10,14 @@ cupertino search <query> [options]
 
 ## Description
 
-Searches the local documentation index using full-text search with BM25 ranking. This command provides the same search functionality as the MCP `search_docs` tool, allowing AI agents and users to search from the command line.
+Searches the local indexes using full-text search with BM25 ranking. This command provides the same search functionality as the MCP `search_docs` tool, allowing AI agents and users to search from the command line.
+
+`search` operates in two modes:
+
+- **Default (no `--source`)**: fans the question out across every available DB in parallel — Apple docs, sample code, HIG, Apple Archive, Swift Evolution, swift.org, the Swift Book, packages, samples — and ranks the merged candidates via reciprocal-rank fusion (k=60). Output is chunked excerpts ready for LLM context. This used to be a separate `cupertino ask` command; it was absorbed into `search` in [#239](https://github.com/mihaelamj/cupertino/issues/239).
+- **`--source <name>`**: queries one source and returns the source-specific list view (URI + summary). Use this when you know exactly which corpus you want.
+
+A failing fetcher (e.g. missing DB) collapses to empty rather than failing the whole query, so partial coverage still returns useful results.
 
 Results can be output in text, JSON, or markdown format, making it easy to integrate with scripts and AI workflows.
 
@@ -31,15 +38,16 @@ cupertino search "Observable macro"
 
 ### -s, --source
 
-Filter results by documentation source.
+Filter results to a single documentation source. Omit to search all sources.
 
 **Type:** String
-**Values:** `apple-docs`, `swift-evolution`, `swift-org`, `swift-book`, `packages`, `apple-sample-code`, `apple-archive`, `hig`
+**Values:** `apple-docs`, `samples`, `hig`, `apple-archive`, `swift-evolution`, `swift-org`, `swift-book`, `packages`, `all`
 
 **Example:**
 ```bash
 cupertino search "concurrency" --source swift-evolution
 cupertino search "View" --source apple-docs
+cupertino search "@Observable" --source samples
 cupertino search "CALayer" --source apple-archive
 cupertino search "buttons" --source hig
 ```
@@ -180,6 +188,100 @@ Path to the search database file.
 cupertino search "View" --search-db ~/custom/search.db
 ```
 
+### --packages-db
+
+Path to the packages database. Used in fan-out mode (and with `--source packages`).
+
+**Type:** String
+**Default:** `~/.cupertino/packages.db`
+
+**Example:**
+```bash
+cupertino search "swift testing fixtures" --packages-db ~/custom/packages.db
+```
+
+### --sample-db
+
+Path to the sample-code index database. Used when `--source samples` (or the default fan-out mode) needs to query sample-code.
+
+**Type:** String
+**Default:** `~/.cupertino/samples.db`
+
+**Example:**
+```bash
+cupertino search "@Observable" --source samples --sample-db ~/custom/samples.db
+```
+
+### --per-source
+
+Per-source candidate cap before reciprocal-rank fusion. Fan-out mode only. ([#239](https://github.com/mihaelamj/cupertino/issues/239))
+
+**Type:** Integer
+**Default:** 10
+
+**Example:**
+```bash
+cupertino search "actor reentrancy" --per-source 5 --limit 3
+```
+
+### --skip-docs
+
+Skip every apple-docs-backed source (apple-docs, apple-archive, hig, swift-evolution, swift-org, swift-book). Fan-out mode only.
+
+**Type:** Flag
+**Default:** false
+
+**Example:**
+```bash
+cupertino search "swift-nio EventLoopGroup" --skip-docs
+```
+
+### --skip-packages
+
+Skip the packages source. Fan-out mode only.
+
+**Type:** Flag
+**Default:** false
+
+### --skip-samples
+
+Skip the samples source. Fan-out mode only.
+
+**Type:** Flag
+**Default:** false
+
+### --brief
+
+Trim each result's excerpt to its first ~12 non-blank lines for triage. The `Read full:` hint, `See also` footer, and tips still print. Fan-out mode + text/markdown only — JSON keeps full chunks for programmatic consumers. ([#239](https://github.com/mihaelamj/cupertino/issues/239) follow-up)
+
+**Type:** Flag
+**Default:** false (full chunks)
+
+**When to use**: skim a list of candidates without burning token budget on full READMEs/code excerpts. The full content is one `cupertino read <id>` away via the per-result hint.
+
+**Example:**
+```bash
+cupertino search "swiftui list animation" --brief --limit 5
+```
+
+### --platform
+
+Restrict packages, samples, and apple-docs results to the named platform's deployment target. Fan-out mode only. Requires `--min-version`. ([#220](https://github.com/mihaelamj/cupertino/issues/220), [#233](https://github.com/mihaelamj/cupertino/issues/233))
+
+**Type:** String
+**Values:** `iOS`, `macOS`, `tvOS`, `watchOS`, `visionOS` (case-insensitive)
+
+Swift-language-version sources (`swift-evolution`, `swift-org`, `swift-book`) silently drop the filter — their pages don't carry `min_<platform>` columns at all.
+
+**Example:**
+```bash
+cupertino search "structured concurrency" --platform iOS --min-version 16.0
+```
+
+### --min-version
+
+Minimum version for `--platform`, e.g. `16.0` / `13.0` / `10.15`. Required when `--platform` is set. Lex compare in SQL; correct for current Apple platforms.
+
 ### --format
 
 Output format for results.
@@ -210,10 +312,28 @@ Before searching, you need a populated search index:
 
 ## Examples
 
-### Basic Search
+### Fan-out mode (default, replaces former `ask`)
 
 ```bash
-cupertino search "SwiftUI View"
+cupertino search "how do I make a SwiftUI view observable"
+```
+
+**Output (chunked excerpts, RRF-ranked):**
+```
+Question: how do I make a SwiftUI view observable
+Searched: apple-docs, swift-evolution, packages, samples
+
+══════════════════════════════════════════════════════════════════════
+[1] Observable | Apple Developer Documentation  •  source: apple-docs  •  score: 0.0328
+    apple-docs://observation/documentation_observation_observable
+──────────────────────────────────────────────────────────────────────
+A type that emits notifications to observers when underlying data changes...
+```
+
+### Single-source list view
+
+```bash
+cupertino search "SwiftUI View" --source apple-docs
 ```
 
 **Output:**
@@ -223,10 +343,6 @@ Found 20 result(s) for 'SwiftUI View':
 [1] View | Apple Developer Documentation
     Source: apple-docs | Framework: swiftui
     URI: apple-docs://swiftui/documentation_swiftui_view
-
-[2] ViewBuilder | Apple Developer Documentation
-    Source: apple-docs | Framework: swiftui
-    URI: apple-docs://swiftui/documentation_swiftui_viewbuilder
 ...
 ```
 
@@ -389,3 +505,7 @@ No results found for 'nonexistent query'
 - [save](../save/) - Build search index
 - [fetch](../fetch/) - Download documentation
 - [doctor](../doctor/) - Check server health
+
+## History
+
+- [#239](https://github.com/mihaelamj/cupertino/issues/239): default fan-out path absorbed from the removed `cupertino ask` subcommand. Pre-1.0 clean break, no alias.

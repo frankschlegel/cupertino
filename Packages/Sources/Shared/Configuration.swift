@@ -4,6 +4,16 @@ import Foundation
 
 /// Configuration for the Apple Documentation crawler
 extension Shared {
+    /// Selects how the crawler discovers child URLs.
+    /// - `auto`: JSON API primary, fall back to WKWebView when JSON 404s. (default)
+    /// - `jsonOnly`: JSON API only, no WKWebView fallback (fastest, narrowest).
+    /// - `webViewOnly`: WKWebView for everything (matches pre-2025-11-30 behavior, broadest discovery).
+    public enum DiscoveryMode: String, Codable, Sendable {
+        case auto
+        case jsonOnly = "json-only"
+        case webViewOnly = "webview-only"
+    }
+
     public struct CrawlerConfiguration: Codable, Sendable {
         public let startURL: URL
         public let allowedPrefixes: [String]
@@ -13,7 +23,7 @@ extension Shared {
         public let logFile: URL?
         public let requestDelay: TimeInterval
         public let retryAttempts: Int
-        public let useJSONAPI: Bool
+        public let discoveryMode: DiscoveryMode
 
         public init(
             startURL: URL = URL(string: Shared.Constants.BaseURL.appleDeveloperDocs)!,
@@ -24,7 +34,7 @@ extension Shared {
             logFile: URL? = nil,
             requestDelay: TimeInterval = 0.05,
             retryAttempts: Int = 3,
-            useJSONAPI: Bool = false
+            discoveryMode: DiscoveryMode = .auto
         ) {
             self.startURL = startURL
 
@@ -58,7 +68,27 @@ extension Shared {
             self.logFile = logFile
             self.requestDelay = requestDelay
             self.retryAttempts = retryAttempts
-            self.useJSONAPI = useJSONAPI
+            self.discoveryMode = discoveryMode
+        }
+
+        /// Custom decoder so legacy config JSON without `discoveryMode` still
+        /// loads cleanly — defaults to `.auto`. Encode is auto-synthesized.
+        private enum CodingKeys: String, CodingKey {
+            case startURL, allowedPrefixes, maxPages, maxDepth, outputDirectory
+            case logFile, requestDelay, retryAttempts, discoveryMode
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            startURL = try container.decode(URL.self, forKey: .startURL)
+            allowedPrefixes = try container.decode([String].self, forKey: .allowedPrefixes)
+            maxPages = try container.decode(Int.self, forKey: .maxPages)
+            maxDepth = try container.decode(Int.self, forKey: .maxDepth)
+            outputDirectory = try container.decode(URL.self, forKey: .outputDirectory)
+            logFile = try container.decodeIfPresent(URL.self, forKey: .logFile)
+            requestDelay = try container.decode(TimeInterval.self, forKey: .requestDelay)
+            retryAttempts = try container.decode(Int.self, forKey: .retryAttempts)
+            discoveryMode = try container.decodeIfPresent(DiscoveryMode.self, forKey: .discoveryMode) ?? .auto
         }
 
         /// Load configuration from JSON file

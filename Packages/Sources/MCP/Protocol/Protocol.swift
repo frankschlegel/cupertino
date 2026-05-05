@@ -2,21 +2,45 @@ import Foundation
 
 // MARK: - MCP Protocol Version
 
-public let MCPProtocolVersion = "2025-06-18"
+public let MCPProtocolVersion = "2025-11-25"
 public let MCPProtocolVersionsSupported = [
     MCPProtocolVersion,
+    "2025-06-18",
     "2024-11-05",
 ]
+
+// MARK: - Icon (MCP 2025-11-25)
+
+/// An icon that a server or client advertises to its peer. New in the
+/// 2025-11-25 spec. `src` is a URL — either an `https://` location or a
+/// `data:` URI. Absent on older protocol handshakes; decoding must stay
+/// tolerant of its omission.
+public struct Icon: Codable, Sendable, Hashable {
+    public let src: String
+    public let mimeType: String?
+    public let sizes: [String]?
+
+    public init(src: String, mimeType: String? = nil, sizes: [String]? = nil) {
+        self.src = src
+        self.mimeType = mimeType
+        self.sizes = sizes
+    }
+}
 
 // MARK: - Implementation Info
 
 public struct Implementation: Codable, Sendable {
     public let name: String
     public let version: String
+    /// Optional icons advertised by this endpoint. Introduced in MCP
+    /// 2025-11-25. Older handshakes must still decode an `Implementation`
+    /// that omits the field entirely.
+    public let icons: [Icon]?
 
-    public init(name: String, version: String) {
+    public init(name: String, version: String, icons: [Icon]? = nil) {
         self.name = name
         self.version = version
+        self.icons = icons
     }
 }
 

@@ -1,17 +1,19 @@
 import Foundation
 @testable import MCP
+@testable import SampleIndex
+@testable import Shared
 import Testing
 @testable import TestSupport
 
 // MARK: - MCP Integration Tests
 
-/// End-to-end integration tests for MCP stdio communication
-/// These tests verify real client-server interaction over stdio pipes
-/// Tagged as .integration because they spawn actual processes
+// End-to-end integration tests for MCP stdio communication
+// These tests verify real client-server interaction over stdio pipes
+// Tagged as .integration because they spawn actual processes
 
 // MARK: - Integration Test Suite
 
-@Suite("MCP Integration Tests", .tags(.integration, .slow))
+@Suite("MCP Integration Tests", .tags(.integration, .slow), .serialized)
 struct MCPIntegrationTests {
     // MARK: - Cupertino Server Tests (Swift-only, no Node.js)
 
@@ -38,7 +40,9 @@ struct MCPIntegrationTests {
         // Send initialize request (compact JSON + newline)
         let protocolVersion = MCPProtocolVersionsSupported.sorted().first ?? MCPProtocolVersion
         let initRequest = """
-        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"\(protocolVersion)","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"Test","version":"1.0.0"}}}\n
+        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"\(
+            protocolVersion
+        )","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"Test","version":"1.0.0"}}}\n
         """
 
         stdinPipe.fileHandleForWriting.write(Data(initRequest.utf8))
@@ -91,42 +95,74 @@ struct MCPIntegrationTests {
     @Test("List tools from cupertino server")
     func cupertinoServerListTools() async throws {
         #if os(macOS)
+        // Ensure samples.db exists at the default path so the spawned
+        // server registers `list_samples` etc. The server's tool list
+        // is conditional on `sampleDatabase != nil` (CompositeToolProvider
+        // line 205); without a pre-existing DB the assertion below would
+        // fail purely from local-machine state. We initialise an empty
+        // v3 schema using the public Database init — same code path as
+        // `cupertino save --samples` would use, just empty.
+        let sampleDBPath = SampleIndex.defaultDatabasePath
+        if !FileManager.default.fileExists(atPath: sampleDBPath.path) {
+            let db = try await SampleIndex.Database(dbPath: sampleDBPath)
+            await db.disconnect()
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ".build/debug/cupertino")
         process.arguments = ["serve"]
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
-
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
 
         try process.run()
-        try await Task.sleep(for: .milliseconds(500))
+        defer {
+            process.terminate()
+            process.waitUntilExit()
+        }
 
-        // Initialize first
+        // Pipeline both requests up front; the server reads them sequentially
+        // and writes one response per request to stdout.
         let protocolVersion = MCPProtocolVersionsSupported.sorted().first ?? MCPProtocolVersion
         let initRequest = """
         {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"\(protocolVersion)","capabilities":{},"clientInfo":{"name":"Test","version":"1.0.0"}}}\n
         """
-        stdinPipe.fileHandleForWriting.write(Data(initRequest.utf8))
-
-        // Wait for init response
-        try await Task.sleep(for: .milliseconds(500))
-
-        // List tools
         let toolsRequest = """
         {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n
         """
+        stdinPipe.fileHandleForWriting.write(Data(initRequest.utf8))
         stdinPipe.fileHandleForWriting.write(Data(toolsRequest.utf8))
 
-        try await Task.sleep(for: .milliseconds(500))
+        // Poll stdout until we've seen BOTH responses (id:1 + id:2) or the
+        // deadline expires. This replaces three fixed 500 ms sleeps that
+        // flaked under full-suite CPU load — the server can take >500 ms to
+        // emit the tools list when the machine is busy indexing in parallel,
+        // but invariably finishes within a handful of seconds.
+        // 30s deadline: the server has to read ~/.cupertino/search.db
+        // (potentially triggering the v12 migration throw) and initialise
+        // a few MB of indexed state before emitting tools/list. On a busy
+        // CI box the process-fork + read can exceed 10s. 30s is still a
+        // tight bound on a healthy machine.
+        let deadline = Date().addingTimeInterval(30)
+        var buffer = ""
+        while Date() < deadline {
+            let chunk = stdoutPipe.fileHandleForReading.availableData
+            if chunk.isEmpty {
+                try await Task.sleep(for: .milliseconds(50))
+                continue
+            }
+            if let piece = String(data: chunk, encoding: .utf8) {
+                buffer += piece
+            }
+            if buffer.contains("\"id\":1"), buffer.contains("\"id\":2") {
+                break
+            }
+        }
 
-        let responseData = stdoutPipe.fileHandleForReading.availableData
-        let responseString = String(data: responseData, encoding: .utf8) ?? ""
-
-        let lines = responseString.split(separator: "\n", omittingEmptySubsequences: true)
-        #expect(lines.count >= 2, "Should receive init + tools responses")
+        let lines = buffer.split(separator: "\n", omittingEmptySubsequences: true)
+        #expect(lines.count >= 2, "Should receive init + tools responses before the 10s deadline")
 
         // Find the tools/list response (id: 2)
         let toolsLine = lines.first { $0.contains("\"id\":2") }
@@ -144,9 +180,6 @@ struct MCPIntegrationTests {
             #expect(toolsResult.tools.contains { $0.name == "search" })
             #expect(toolsResult.tools.contains { $0.name == "list_samples" })
         }
-
-        process.terminate()
-        process.waitUntilExit()
         #else
         // Skip on non-macOS platforms
         #endif
@@ -186,7 +219,7 @@ struct MCPIntegrationTests {
     }
 
     @Test("Handles malformed JSON from server")
-    func malformedJSONResponse() async throws {
+    func malformedJSONResponse() throws {
         // Simulate receiving malformed JSON
         let malformedResponse = "not valid json\n"
 
@@ -197,7 +230,7 @@ struct MCPIntegrationTests {
     }
 
     @Test("Handles incomplete JSON in stream")
-    func incompleteJSON() async throws {
+    func incompleteJSON() {
         // Simulate partial JSON without newline
         let partialJSON = "{\"jsonrpc\":\"2.0\",\"id\":1"
 
@@ -211,7 +244,7 @@ struct MCPIntegrationTests {
     // MARK: - Protocol Compliance Tests
 
     @Test("Server rejects pretty-printed JSON")
-    func prettyPrintedRejection() async throws {
+    func prettyPrintedRejection() throws {
         // Demonstrate that multi-line JSON violates the protocol
         let prettyJSON = """
         {
@@ -227,7 +260,7 @@ struct MCPIntegrationTests {
 
         // This would fail in a real MCP server because it reads line-by-line
         // The server would only see the first line: "{"
-        let firstLine = prettyJSON.split(separator: "\n", omittingEmptySubsequences: true).first!
+        let firstLine = try #require(prettyJSON.split(separator: "\n", omittingEmptySubsequences: true).first)
         #expect(throws: Error.self) {
             _ = try JSONDecoder().decode(JSONRPCRequest.self, from: Data(String(firstLine).utf8))
         }
@@ -296,7 +329,7 @@ struct MCPIntegrationTests {
         let resultData = try JSONEncoder().encode(largeResult)
 
         // Compact JSON should still be single-line
-        let json = String(data: resultData, encoding: .utf8)!
+        let json = try #require(String(data: resultData, encoding: .utf8))
         #expect(!json.contains("\n"))
 
         // Should be large (>100KB)

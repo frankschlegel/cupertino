@@ -26,17 +26,13 @@ enum ArchiveGuidesCatalog {
         Shared.Constants.defaultBaseDirectory.appendingPathComponent("selected-archive-guides.json")
     }
 
-    /// All archive guides from the bundled catalog
+    /// All archive guides from the embedded catalog (#161).
     static var allGuides: [ArchiveEntry] {
-        guard let url = CupertinoResources.bundle.url(
-            forResource: "archive-guides-catalog",
-            withExtension: "json"
-        ) else {
+        guard let data = CupertinoResources.jsonData(named: "archive-guides-catalog") else {
             return []
         }
 
         do {
-            let data = try Data(contentsOf: url)
             let catalog = try JSONDecoder().decode(ArchiveGuidesCatalogJSON.self, from: data)
             return catalog.guides.map { guide in
                 ArchiveEntry(
@@ -78,12 +74,9 @@ enum ArchiveGuidesCatalog {
         }
     }
 
-    /// Create default selections file from bundled catalog (required guides only)
+    /// Create default selections file from embedded catalog (required guides only, #161).
     private static func createDefaultSelectionsFile() {
-        guard let bundleURL = CupertinoResources.bundle.url(
-            forResource: "archive-guides-catalog",
-            withExtension: "json"
-        ) else {
+        guard let data = CupertinoResources.jsonData(named: "archive-guides-catalog") else {
             return
         }
 
@@ -94,8 +87,6 @@ enum ArchiveGuidesCatalog {
                 try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
             }
 
-            // Load bundled catalog and extract required guides
-            let data = try Data(contentsOf: bundleURL)
             let catalog = try JSONDecoder().decode(ArchiveGuidesCatalogJSON.self, from: data)
             let requiredGuides = catalog.guides.filter(\.required)
 

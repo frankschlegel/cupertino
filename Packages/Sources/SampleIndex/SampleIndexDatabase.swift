@@ -1,5 +1,6 @@
 import ASTIndexer
 import Foundation
+import Shared
 import SQLite3
 
 // MARK: - Sample Index Database
@@ -13,7 +14,13 @@ extension SampleIndex {
         /// Version history:
         /// - 1: Initial schema (projects, files, projects_fts, files_fts)
         /// - 2: Added file_symbols, file_imports tables for SwiftSyntax AST indexing (#81)
-        public static let schemaVersion: Int32 = 2
+        // Bumped to 3 in #228 phase 2: added per-sample availability
+        // columns to `projects` (`min_ios`, `min_macos`, `min_tvos`,
+        // `min_watchos`, `min_visionos`, `availability_source`) plus
+        // `available_attrs_json` on `files`. No migration — `save
+        // --samples` always wipes the DB and rebuilds, so existing v2
+        // databases get replaced wholesale on the next run.
+        public static let schemaVersion: Int32 = 3
 
         private var database: OpaquePointer?
         private let dbPath: URL
@@ -29,10 +36,36 @@ extension SampleIndex {
                 withIntermediateDirectories: true
             )
 
+            // #228 phase 2: samples.db is wipe-and-rebuild on schema
+            // change (no ALTER migrations). If the file on disk is from
+            // an older schema version, delete it and start clean — the
+            // alternative is letting `createTables`'s index-creation
+            // step fail with "no such column" on every server boot
+            // until the user runs `save --samples`. The DB has no
+            // user-authoritative content (it's all derivable from the
+            // sample-code zips), so the wipe is safe.
             try await openDatabase()
+            if FileManager.default.fileExists(atPath: dbPath.path),
+               try await readUserVersion() != Self.schemaVersion {
+                disconnect()
+                try? FileManager.default.removeItem(at: dbPath)
+                try await openDatabase()
+            }
             try await createTables()
             try await setSchemaVersion()
             isInitialized = true
+        }
+
+        /// Read `PRAGMA user_version` from the open DB. Returns `0`
+        /// when the DB is freshly created (SQLite's default).
+        private func readUserVersion() async throws -> Int32 {
+            guard let database else { return 0 }
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK,
+                  sqlite3_step(statement) == SQLITE_ROW
+            else { return 0 }
+            return sqlite3_column_int(statement, 0)
         }
 
         /// Close database connection
@@ -89,10 +122,25 @@ extension SampleIndex {
                 zip_filename TEXT NOT NULL,
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
-                indexed_at INTEGER NOT NULL
+                indexed_at INTEGER NOT NULL,
+                -- Availability columns (#228 phase 2). Source = "sample-swift"
+                -- when populated from the per-sample availability.json sidecar
+                -- written during indexing; NULL when the sample shipped no
+                -- Package.swift platforms block.
+                min_ios TEXT,
+                min_macos TEXT,
+                min_tvos TEXT,
+                min_watchos TEXT,
+                min_visionos TEXT,
+                availability_source TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_projects_title ON projects(title);
+            CREATE INDEX IF NOT EXISTS idx_projects_min_ios ON projects(min_ios);
+            CREATE INDEX IF NOT EXISTS idx_projects_min_macos ON projects(min_macos);
+            CREATE INDEX IF NOT EXISTS idx_projects_min_tvos ON projects(min_tvos);
+            CREATE INDEX IF NOT EXISTS idx_projects_min_watchos ON projects(min_watchos);
+            CREATE INDEX IF NOT EXISTS idx_projects_min_visionos ON projects(min_visionos);
 
             -- FTS5 for project search (title, description, readme)
             CREATE VIRTUAL TABLE IF NOT EXISTS projects_fts USING fts5(
@@ -114,6 +162,11 @@ extension SampleIndex {
                 extension TEXT NOT NULL,
                 content TEXT NOT NULL,
                 size INTEGER NOT NULL,
+                -- Per-file @available occurrences as a JSON array of
+                -- {line, raw, platforms[]} (#228 phase 2). NULL when the
+                -- file had no @available attributes — distinct from
+                -- "annotation never ran".
+                available_attrs_json TEXT,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 UNIQUE(project_id, path)
             );
@@ -198,8 +251,9 @@ extension SampleIndex {
             // Insert into projects table
             let sql = """
             INSERT OR REPLACE INTO projects
-            (id, title, description, frameworks, readme, web_url, zip_filename, file_count, total_size, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            (id, title, description, frameworks, readme, web_url, zip_filename, file_count, total_size, indexed_at,
+             min_ios, min_macos, min_tvos, min_watchos, min_visionos, availability_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
 
             var statement: OpaquePointer?
@@ -228,6 +282,25 @@ extension SampleIndex {
             sqlite3_bind_int(statement, 8, Int32(project.fileCount))
             sqlite3_bind_int64(statement, 9, Int64(project.totalSize))
             sqlite3_bind_int64(statement, 10, Int64(project.indexedAt.timeIntervalSince1970))
+
+            // #228 phase 2: availability columns 11-16.
+            func bindMin(_ pos: Int32, _ key: String) {
+                if let value = project.deploymentTargets[key] {
+                    sqlite3_bind_text(statement, pos, (value as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, pos)
+                }
+            }
+            bindMin(11, "iOS")
+            bindMin(12, "macOS")
+            bindMin(13, "tvOS")
+            bindMin(14, "watchOS")
+            bindMin(15, "visionOS")
+            if let source = project.availabilitySource {
+                sqlite3_bind_text(statement, 16, (source as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(statement, 16)
+            }
 
             guard sqlite3_step(statement) == SQLITE_DONE else {
                 let errorMessage = String(cString: sqlite3_errmsg(database))
@@ -273,8 +346,8 @@ extension SampleIndex {
             // Insert into files table
             let sql = """
             INSERT OR REPLACE INTO files
-            (project_id, path, filename, folder, extension, content, size)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            (project_id, path, filename, folder, extension, content, size, available_attrs_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """
 
             var statement: OpaquePointer?
@@ -292,6 +365,15 @@ extension SampleIndex {
             sqlite3_bind_text(statement, 5, (file.fileExtension as NSString).utf8String, -1, nil)
             sqlite3_bind_text(statement, 6, (file.content as NSString).utf8String, -1, nil)
             sqlite3_bind_int64(statement, 7, Int64(file.size))
+
+            // #228 phase 2: per-file @available occurrences as JSON.
+            // NULL when the file had no attributes — distinct from
+            // "annotation didn't run".
+            if let attrs = file.availableAttrsJSON {
+                sqlite3_bind_text(statement, 8, (attrs as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(statement, 8)
+            }
 
             guard sqlite3_step(statement) == SQLITE_DONE else {
                 let errorMessage = String(cString: sqlite3_errmsg(database))
@@ -496,12 +578,12 @@ extension SampleIndex {
                 throw SampleIndex.Error.invalidQuery("Query cannot be empty")
             }
 
-            // Sanitize query for FTS5
-            let sanitizedQuery = query
-                .components(separatedBy: .whitespaces)
-                .filter { !$0.isEmpty }
-                .map { "\"\($0)\"" }
-                .joined(separator: " ")
+            // Build FTS5 query: tokenize natural language, drop
+            // stopwords, OR-join the remainder. Same shape as
+            // Search.PackageQuery uses for packages.db (#238 unified
+            // both paths via Shared.FTSQuery).
+            let sanitizedQuery = Shared.FTSQuery.build(question: query)
+            guard !sanitizedQuery.isEmpty else { return [] }
 
             var sql = """
             SELECT p.id, p.title, p.description, p.frameworks, p.readme,
@@ -587,7 +669,9 @@ extension SampleIndex {
             query: String,
             projectId: String? = nil,
             fileExtension: String? = nil,
-            limit: Int = 20
+            limit: Int = 20,
+            platform: String? = nil,
+            minVersion: String? = nil
         ) async throws -> [FileSearchResult] {
             guard let database else {
                 throw SampleIndex.Error.databaseNotInitialized
@@ -597,19 +681,37 @@ extension SampleIndex {
                 throw SampleIndex.Error.invalidQuery("Query cannot be empty")
             }
 
-            // Sanitize for FTS5
-            let sanitizedQuery = query
-                .components(separatedBy: .whitespaces)
-                .filter { !$0.isEmpty }
-                .map { "\"\($0)\"" }
-                .joined(separator: " ")
+            // Build FTS5 query: tokenize natural language, drop
+            // stopwords, OR-join the remainder. Same shape as
+            // Search.PackageQuery uses for packages.db (#238 unified
+            // both paths via Shared.FTSQuery).
+            let sanitizedQuery = Shared.FTSQuery.build(question: query)
+            guard !sanitizedQuery.isEmpty else { return [] }
+
+            // #233: optional platform filter — JOIN projects table when
+            // both `platform` and `minVersion` are set, restrict to rows
+            // whose `min_<platform>` column is non-NULL and lex-≤
+            // the requested version. Lex compare matches the convention
+            // used in #220's PackageQuery.
+            let platformColumn: String?
+            if platform != nil, minVersion != nil {
+                platformColumn = SampleIndex.minColumn(for: platform ?? "")
+            } else {
+                platformColumn = nil
+            }
 
             var sql = """
             SELECT f.project_id, f.path, f.filename, snippet(files_fts, 3, '<b>', '</b>', '...', 50), bm25(files_fts)
             FROM files f
             JOIN files_fts fts ON f.project_id = fts.project_id AND f.path = fts.path
-            WHERE files_fts MATCH ?
             """
+
+            if let platformColumn {
+                sql += " JOIN projects p ON p.id = f.project_id"
+                _ = platformColumn
+            }
+
+            sql += " WHERE files_fts MATCH ?"
 
             if projectId != nil {
                 sql += " AND f.project_id = ?"
@@ -617,6 +719,10 @@ extension SampleIndex {
 
             if fileExtension != nil {
                 sql += " AND f.extension = ?"
+            }
+
+            if let platformColumn {
+                sql += " AND p.\(platformColumn) IS NOT NULL AND p.\(platformColumn) <= ?"
             }
 
             sql += " ORDER BY bm25(files_fts) LIMIT ?;"
@@ -640,6 +746,11 @@ extension SampleIndex {
 
             if let fileExtension {
                 sqlite3_bind_text(statement, paramIndex, (fileExtension.lowercased() as NSString).utf8String, -1, nil)
+                paramIndex += 1
+            }
+
+            if platformColumn != nil, let minVersion {
+                sqlite3_bind_text(statement, paramIndex, (minVersion as NSString).utf8String, -1, nil)
                 paramIndex += 1
             }
 
@@ -678,7 +789,8 @@ extension SampleIndex {
 
             let sql = """
             SELECT id, title, description, frameworks, readme, web_url, zip_filename,
-                   file_count, total_size, indexed_at
+                   file_count, total_size, indexed_at,
+                   min_ios, min_macos, min_tvos, min_watchos, min_visionos, availability_source
             FROM projects
             WHERE id = ?
             LIMIT 1;
@@ -709,6 +821,15 @@ extension SampleIndex {
 
             let readme = sqlite3_column_text(statement, 4).map { String(cString: $0) }
 
+            // #228 phase 2: read availability columns 10..15.
+            var deploymentTargets: [String: String] = [:]
+            for (idx, key) in [(10, "iOS"), (11, "macOS"), (12, "tvOS"), (13, "watchOS"), (14, "visionOS")] {
+                if let cString = sqlite3_column_text(statement, Int32(idx)) {
+                    deploymentTargets[key] = String(cString: cString)
+                }
+            }
+            let availabilitySource = sqlite3_column_text(statement, 15).map { String(cString: $0) }
+
             return Project(
                 id: String(cString: idPtr),
                 title: String(cString: titlePtr),
@@ -719,7 +840,9 @@ extension SampleIndex {
                 zipFilename: String(cString: zipPtr),
                 fileCount: Int(sqlite3_column_int(statement, 7)),
                 totalSize: Int(sqlite3_column_int64(statement, 8)),
-                indexedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 9)))
+                indexedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 9))),
+                deploymentTargets: deploymentTargets,
+                availabilitySource: availabilitySource
             )
         }
 
@@ -732,7 +855,7 @@ extension SampleIndex {
             }
 
             let sql = """
-            SELECT project_id, path, filename, folder, extension, content, size
+            SELECT project_id, path, filename, folder, extension, content, size, available_attrs_json
             FROM files
             WHERE project_id = ? AND path = ?
             LIMIT 1;
@@ -759,10 +882,15 @@ extension SampleIndex {
                 return nil
             }
 
+            // #228 phase 2: column 7 is available_attrs_json (NULL when
+            // the file had no @available occurrences).
+            let attrsJSON = sqlite3_column_text(statement, 7).map { String(cString: $0) }
+
             return File(
                 projectId: String(cString: projectIdPtr),
                 path: String(cString: pathPtr),
-                content: String(cString: contentPtr)
+                content: String(cString: contentPtr),
+                availableAttrsJSON: attrsJSON
             )
         }
 

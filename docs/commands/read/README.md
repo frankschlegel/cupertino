@@ -1,234 +1,203 @@
 # cupertino read
 
-Read full document content by URI
+Read a document from any indexed source (docs, samples, packages)
 
 ## Synopsis
 
 ```bash
-cupertino read <uri> [options]
+cupertino read <identifier> [--source <name>] [options]
 ```
 
 ## Description
 
-Reads the full content of a document from the search index by its URI. This command provides the same functionality as the MCP `read_document` tool, allowing users and AI agents to retrieve complete document content from the command line.
+`cupertino read` is a unified front door that resolves an identifier to a full document across all three local databases — `search.db` (docs), `samples.db` (sample-code projects + files), and `packages.db` (package source files). Behaviour mirrors what every fan-out result in `cupertino search` emits:
 
-Use this command to get full content when search results are truncated.
+```
+▶ Read full: cupertino read <identifier> --source <name>
+```
+
+so an LLM consumer can drill into any candidate by copying that line verbatim.
+
+Internally, dispatch is by either the `--source` flag (when the caller knows which DB to hit) or by inferring from the identifier shape (URI scheme → docs; otherwise tries samples then packages). The actual data lives in `Services/Commands/ReadService.swift`; this command is a thin CLI wrapper.
 
 ## Arguments
 
-### uri
+### identifier
 
-The document URI (required).
+The document identifier (required). Shape depends on the source:
 
-**Format:** `<source>://<framework>/<path>`
+| Source | Identifier shape | Example |
+|---|---|---|
+| docs (apple-docs / hig / archive / evolution / swift-org / swift-book) | URI scheme | `apple-docs://swiftui/documentation_swiftui_view` |
+| samples (project) | slugified id, no `/` | `swiftui-adopting-drag-and-drop-using-swiftui` |
+| samples (file) | `<projectId>/<path>` | `swiftui-foo/Sources/main.swift` |
+| packages | `<owner>/<repo>/<relpath>` | `pointfreeco/swift-navigation/Sources/UIKitNavigation/Documentation.docc/UIKitNavigation.md` |
 
-**Examples:**
-```bash
-cupertino read "apple-docs://swiftui/documentation_swiftui_view"
-cupertino read "swift-evolution://SE-0302"
-cupertino read "swift-book://swift-book_documentation_the-swift-programming-language_concurrency"
-```
+Shape alone disambiguates URI vs. non-URI, but a sample-file path and a package path overlap. `--source` resolves it; `cupertino search` always emits the source so the hint is unambiguous.
 
 ## Options
 
+### --source
+
+Disambiguator for non-URI identifiers.
+
+**Type:** String  
+**Values:** `apple-docs`, `apple-archive`, `hig`, `swift-evolution`, `swift-org`, `swift-book`, `samples`, `packages`  
+**Default:** auto-detected (URI scheme → docs; otherwise tries samples, then packages)
+
+**Examples:**
+```bash
+cupertino read swiftui-controlling-the-timing-and-movements-of-your-animations --source samples
+cupertino read pointfreeco/swift-navigation/Sources/.../UIKitNavigation.md --source packages
+cupertino read "apple-docs://swiftui/documentation_swiftui_view" --source apple-docs
+```
+
 ### --format
 
-Output format for the document.
+Output format. Honoured by docs reads only; samples + packages return their stored content as-is.
 
-**Type:** String
+**Type:** String  
 **Values:** `json` (default), `markdown`
-
-**Example:**
-```bash
-cupertino read "apple-docs://swift/documentation_swift_array" --format json
-cupertino read "apple-docs://swift/documentation_swift_array" --format markdown
-```
 
 ### --search-db
 
-Path to the search database file.
+Path to the search database (`search.db`).
 
-**Type:** String
+**Type:** String  
 **Default:** `~/.cupertino/search.db`
 
-**Example:**
-```bash
-cupertino read "apple-docs://swiftui/documentation_swiftui_view" --search-db ~/custom/search.db
-```
+### --sample-db
 
-## Prerequisites
+Path to the sample-code database (`samples.db`).
 
-Before reading documents, you need a populated search index:
+**Type:** String  
+**Default:** `~/.cupertino/samples.db`
 
-1. **Download documentation:**
-   ```bash
-   cupertino fetch --type docs
-   cupertino fetch --type evolution
-   ```
+### --packages-db
 
-2. **Build search index:**
-   ```bash
-   cupertino save
-   ```
+Path to the packages database (`packages.db`).
+
+**Type:** String  
+**Default:** `~/.cupertino/packages.db`
 
 ## Examples
 
-### Read in Markdown Format
+### Read a doc by URI
 
 ```bash
 cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format markdown
 ```
 
-**Output:**
-```markdown
----
-source: https://developer.apple.com/documentation/SwiftUI/View
-crawled: 2025-11-30T21:23:10Z
----
-
-# View
-
-**Protocol**
-
-A type that represents part of your app's user interface...
-```
-
-### Read in JSON Format
+### Read a sample project's README
 
 ```bash
-cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format json
+cupertino read swiftui-adopting-drag-and-drop-using-swiftui --source samples
 ```
 
-**Output:**
-```json
-{
-  "title": "View",
-  "kind": "Protocol",
-  "module": "SwiftUI",
-  "declaration": "protocol View",
-  "abstract": "A type that represents part of your app's user interface...",
-  ...
-}
-```
-
-### Workflow: Search then Read
+### Read a sample file
 
 ```bash
-# 1. Search for documentation
-cupertino search "MainActor" --limit 1
-
-# Output shows:
-#   [truncated at ~150 words] Full document: apple-docs://swift/documentation_swift_mainactor
-
-# 2. Read full document
-cupertino read "apple-docs://swift/documentation_swift_mainactor" --format markdown
+cupertino read swiftui-food-truck/Sources/FoodTruck/Models/Order.swift --source samples
 ```
 
-### Pipe to Other Tools
+### Read a package source file
 
 ```bash
-# Read and extract specific fields with jq
+cupertino read pointfreeco/swift-navigation/Sources/UIKitNavigation/Documentation.docc/UIKitNavigation.md --source packages
+```
+
+### Workflow: search then drill in
+
+```bash
+# 1. Search across all sources, see candidates with read-full hints inline
+cupertino search "swiftui list animation" --skip-docs --limit 3 --brief
+
+# Output shows per-result:
+#   ▶ Read full: cupertino read <id> --source <name>
+
+# 2. Copy the line and run it
+cupertino read swiftui-controlling-the-timing-and-movements-of-your-animations --source samples
+```
+
+### Pipe to other tools
+
+```bash
 cupertino read "apple-docs://swift/documentation_swift_array" --format json | jq '.declaration'
-
-# Read and save to file
 cupertino read "apple-docs://swiftui/documentation_swiftui_view" --format markdown > view.md
 ```
 
-## Output Formats
+## URI shapes (docs sources)
 
-### JSON (Default)
+| Source | URI shape | Example |
+|---|---|---|
+| Apple Documentation | `apple-docs://<framework>/<path>` | `apple-docs://swiftui/documentation_swiftui_view` |
+| Apple Archive | `apple-archive://<guide>/<page>` | `apple-archive://TP40014097/about-views` |
+| HIG | `hig://<category>/<page>` | `hig://components/buttons` |
+| Swift Evolution | `swift-evolution://<proposal-id>` | `swift-evolution://SE-0302` |
+| Swift.org | `swift-org://<path>` | `swift-org://swift-org_documentation_articles_value-and-reference-types` |
+| Swift Book | `swift-book://<path>` | `swift-book://swift-book_documentation_the-swift-programming-language_concurrency` |
 
-Returns structured document data including:
-- title, kind, module, declaration
-- abstract, overview, discussion
-- code examples with language tags
-- parameters, return values, conformance info
-- platform availability, deprecation notices
+## Output formats
 
-Best for:
-- AI agent integration
-- Programmatic processing
-- Extracting specific fields
+### JSON (default for docs)
 
-### Markdown
+Structured document data: title, kind, module, declaration, abstract, overview, discussion, code examples, parameters, return values, conformance info, platform availability, deprecation notices. Best for AI agents and programmatic processing.
 
-Returns rendered markdown content with:
-- YAML front matter (source URL, crawl date)
-- Full document content
-- Code blocks with syntax highlighting
-- Cross-references as doc:// links
+### Markdown (for docs)
 
-Best for:
-- Human reading
-- Documentation export
-- Copy-paste workflows
+Rendered markdown content with YAML front matter (source URL, crawl date), full body, code blocks with syntax highlighting, cross-references as `doc://` links.
 
-## URI Formats
+### Samples + packages
 
-### Apple Documentation
-```
-apple-docs://<framework>/<path>
-```
-Example: `apple-docs://swiftui/documentation_swiftui_view`
+Return their stored UTF-8 content as-is — README markdown for sample projects, file contents for sample files and package files. The `--format` flag is ignored on these paths.
 
-### Swift Evolution
-```
-swift-evolution://<proposal-id>
-```
-Example: `swift-evolution://SE-0302`
+## Error handling
 
-### Swift Book
-```
-swift-book://<path>
-```
-Example: `swift-book://swift-book_documentation_the-swift-programming-language_concurrency`
-
-### Swift.org
-```
-swift-org://<path>
-```
-Example: `swift-org://swift-org_documentation_articles_value-and-reference-types`
-
-### Human Interface Guidelines
-```
-hig://<category>/<page>
-```
-Example: `hig://components/buttons`
-
-### Apple Archive
-```
-apple-archive://<guide>/<page>
-```
-Example: `apple-archive://TP40014097/about-views`
-
-## Error Handling
-
-### Document Not Found
+### Document not found in search.db
 
 ```
-Error: Document not found: apple-docs://invalid/path
+Error: Document not found in search.db: apple-docs://invalid/path
 ```
 
-**Solutions:**
-- Check the URI spelling
-- Run `cupertino search` to find valid URIs
-- Ensure the document is indexed (`cupertino save`)
+**Solutions:** check spelling; run `cupertino search` to find valid URIs; ensure the doc is indexed (`cupertino save --docs`).
 
-### Database Not Found
+### Not found in samples.db
 
 ```
-Error: Search database not found at /Users/user/.cupertino/search.db
-Run 'cupertino save' to build the search index first.
+Error: Not found in samples.db: <projectId>
 ```
 
-**Solution:** Build the search index:
-```bash
-cupertino save
+**Solutions:** verify the projectId via `cupertino list-samples`; rebuild via `cupertino save --samples`.
+
+### Not found in packages.db
+
+```
+Error: Not found in packages.db: <owner>/<repo>/<relpath>
 ```
 
-## See Also
+**Solutions:** verify the package was indexed (`cupertino doctor` shows package count); the file might be at a different path — search the package via `cupertino search --source packages`.
 
-- [search](../search/) - Search documentation (returns truncated summaries)
-- [serve](../serve/) - Start MCP server with read_document tool
-- [save](../save/) - Build search index
-- [fetch](../fetch/) - Download documentation
+### Auto-source mode found nothing
+
+```
+Error: Tried docs, samples, and packages — no source matched. Identifier: <x>
+```
+
+**Solution:** pass `--source` explicitly so the error message is more specific.
+
+### Database not found
+
+Each backend has its own missing-DB error pointing at `cupertino setup` or the relevant `cupertino save --<scope>` rebuild command.
+
+## See also
+
+- [search](../search/) — fan-out search; emits `▶ Read full:` hints for every result
+- [list-samples](../list-samples/) — enumerate sample projectIds
+- [list-frameworks](../list-frameworks/) — enumerate docs frameworks
+- [serve](../serve/) — start MCP server (mirror tool: `read_document`, `read_sample`, `read_sample_file`)
+- [save](../save/) — build the three databases
+
+## History
+
+- [#239](https://github.com/mihaelamj/cupertino/issues/239) follow-up: unified across docs / samples / packages. Pre-#239 this command only resolved docs URIs.
+- Logic moved to `Services/Commands/ReadService.swift` so MCP tools and CLI share one implementation.

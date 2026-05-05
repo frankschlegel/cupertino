@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# cdev — run the dev-build cupertino against the v1.0 Archive search.db.
+# Brew binary at /opt/homebrew/bin/cupertino is unaffected.
+set -euo pipefail
+
+REPO=/Users/mm/Developer/personal/public/cupertino
+BIN_DIR="$REPO/Packages/.build/arm64-apple-macosx/debug"
+BIN="$BIN_DIR/cupertino"
+DB_BASE=/Users/mm/Downloads/Archive
+
+if [[ ! -x "$BIN" ]]; then
+    (cd "$REPO" && make build-debug DEV_BASE_DIR="$DB_BASE")
+fi
+
+# Keep config pointing at Archive (cheap, idempotent)
+printf '{ "baseDirectory": "%s" }\n' "$DB_BASE" > "$BIN_DIR/cupertino.config.json"
+
+exec "$BIN" "$@"

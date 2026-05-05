@@ -9,7 +9,7 @@ SQLite database with Full-Text Search (FTS5) index for fast sample code searches
 ## Created By
 
 ```bash
-cupertino index
+cupertino save --samples
 ```
 
 **Important**: Run `cupertino cleanup` before indexing to remove unnecessary files from sample code archives.
@@ -24,29 +24,70 @@ cupertino index
 
 ## Database Structure
 
-SQLite database with two FTS5 virtual tables:
+SQLite database with regular `projects` and `files` tables plus paired FTS5 mirrors. Schema version `3` (#228 phase 2 — added per-sample availability columns).
 
-### Projects Table
+### `projects` table
+
 ```sql
-CREATE VIRTUAL TABLE projects_fts USING fts5(
-    id,              -- Project slug (e.g., "adopting-common-protocols")
-    title,           -- Project title
-    description,     -- Project description
-    frameworks,      -- Space-separated frameworks
-    readme,          -- Full README content
-    tokenize = 'porter unicode61'
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    frameworks TEXT NOT NULL,
+    readme TEXT,
+    web_url TEXT NOT NULL,
+    zip_filename TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    total_size INTEGER NOT NULL,
+    indexed_at INTEGER NOT NULL,
+    -- Availability (#228 phase 2). Populated from each sample's
+    -- Package.swift platforms block when present (Apple's Xcode-project
+    -- samples typically leave these NULL).
+    min_ios TEXT,
+    min_macos TEXT,
+    min_tvos TEXT,
+    min_watchos TEXT,
+    min_visionos TEXT,
+    availability_source TEXT  -- "sample-swift" when populated
 );
 ```
 
-### Files Table
+### `projects_fts` (FTS5)
+
+```sql
+CREATE VIRTUAL TABLE projects_fts USING fts5(
+    id, title, description, readme, frameworks,
+    tokenize='porter unicode61'
+);
+```
+
+### `files` table
+
+```sql
+CREATE TABLE files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    content TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    -- Per-file @available(...) occurrences as JSON (#228 phase 2).
+    -- Array of {line, raw, platforms[]}. NULL when the file had no
+    -- attributes — distinct from "annotation never ran".
+    available_attrs_json TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE(project_id, path)
+);
+```
+
+### `files_fts` (FTS5)
+
 ```sql
 CREATE VIRTUAL TABLE files_fts USING fts5(
-    project_id,      -- Parent project ID
-    path,            -- File path (e.g., "Sources/Views/ContentView.swift")
-    filename,        -- File name (e.g., "ContentView.swift")
-    folder,          -- Folder path (e.g., "Sources/Views")
-    content,         -- Full file content
-    tokenize = 'porter unicode61'
+    project_id, path, filename, content,
+    tokenize='unicode61'
 );
 ```
 
@@ -140,20 +181,20 @@ The MCP server provides sample code search tools:
 
 ```bash
 # Clear and rebuild from scratch
-cupertino index --clear
+cupertino save --samples --clear
 
 # Force reindex all projects (even if already indexed)
-cupertino index --force
+cupertino save --samples --force
 ```
 
 ## Customizing Location
 
 ```bash
 # Use custom database path
-cupertino index --database ./my-samples.db
+cupertino save --samples --samples-db ./my-samples.db
 
 # Use custom sample code directory
-cupertino index --sample-code-dir ~/my-samples
+cupertino save --samples --samples-dir ~/my-samples
 ```
 
 ## Technical Details

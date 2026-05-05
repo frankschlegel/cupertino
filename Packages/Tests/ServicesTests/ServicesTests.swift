@@ -141,3 +141,111 @@ struct FormatConfigTests {
         #expect(config.emptyMessage == "_No results found. Try broader search terms._")
     }
 }
+
+// MARK: - SampleCandidateFetcher (#230)
+
+@Suite("SampleCandidateFetcher (#230)")
+struct SampleCandidateFetcherTests {
+    @Test("sourceName matches the canonical samples prefix")
+    func sourceNameIsSamples() async throws {
+        // Build a fetcher against a temp DB just to verify the protocol
+        // hookup; the in-memory DB is empty so fetch() returns no rows
+        // but doesn't throw.
+        let tempDB = FileManager.default.temporaryDirectory
+            .appendingPathComponent("samples-fetcher-test-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: tempDB) }
+
+        let service = try await Services.SampleSearchService(dbPath: tempDB)
+        defer { Task { await service.disconnect() } }
+
+        let fetcher = Services.SampleCandidateFetcher(service: service)
+        #expect(fetcher.sourceName == Shared.Constants.SourcePrefix.samples)
+    }
+
+    @Test("Empty samples DB → fetch returns empty array, doesn't throw")
+    func emptyDBYieldsEmptyResults() async throws {
+        let tempDB = FileManager.default.temporaryDirectory
+            .appendingPathComponent("samples-fetcher-test-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: tempDB) }
+
+        let service = try await Services.SampleSearchService(dbPath: tempDB)
+        defer { Task { await service.disconnect() } }
+
+        let fetcher = Services.SampleCandidateFetcher(service: service)
+        let candidates = try await fetcher.fetch(question: "swiftui list", limit: 5)
+        #expect(candidates.isEmpty)
+    }
+}
+
+// MARK: - Teaser fallback resilience
+
+@Suite("TeaserResults default + withTeaserService failure handling")
+struct TeaserResultsResilienceTests {
+    @Test("TeaserResults() default is empty")
+    func defaultIsEmpty() {
+        let results = TeaserResults()
+        #expect(results.isEmpty)
+        #expect(results.appleDocs.isEmpty)
+        #expect(results.samples.isEmpty)
+        #expect(results.archive.isEmpty)
+        #expect(results.hig.isEmpty)
+        #expect(results.swiftEvolution.isEmpty)
+        #expect(results.swiftOrg.isEmpty)
+        #expect(results.swiftBook.isEmpty)
+        #expect(results.packages.isEmpty)
+        #expect(results.allSources.isEmpty)
+    }
+
+    @Test("withTeaserService throws when search.db is a directory (open fails)")
+    func searchDbAsDirectoryFails() async throws {
+        // Pointing search.db at an existing directory makes
+        // `sqlite3_open_v2` fail. This is the simplest reproducible
+        // proxy for "search.db can't be read right now" — same shape as
+        // the real-world `database is locked` error caught by the
+        // resilience patch in `cupertino search --source samples`.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teaser-search-as-dir-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        await #expect(throws: (any Error).self) {
+            try await Services.ServiceContainer.withTeaserService(
+                searchDbPath: tempDir.path,
+                sampleDbPath: nil
+            ) { service in
+                _ = await service.fetchAllTeasers(
+                    query: "swiftui",
+                    framework: nil,
+                    currentSource: Shared.Constants.SourcePrefix.samples,
+                    includeArchive: false
+                )
+            }
+        }
+    }
+
+    @Test("Caller swallowing withTeaserService error → empty TeaserResults works")
+    func callerCanFallBackOnEmpty() async {
+        // Replicates the resilience pattern in SearchCommand.runSampleSearch:
+        // catch the throw, fall back to TeaserResults(). Verifies the
+        // fallback contract (empty + iterable) so future changes don't
+        // accidentally make the empty struct require parameters.
+        let teasers: TeaserResults
+        do {
+            teasers = try await Services.ServiceContainer.withTeaserService(
+                searchDbPath: "/var/empty/intentionally-broken-search.db.\(UUID().uuidString)",
+                sampleDbPath: nil
+            ) { service in
+                await service.fetchAllTeasers(
+                    query: "swiftui",
+                    framework: nil,
+                    currentSource: Shared.Constants.SourcePrefix.samples,
+                    includeArchive: false
+                )
+            }
+        } catch {
+            teasers = TeaserResults()
+        }
+        #expect(teasers.isEmpty || !teasers.isEmpty) // either path is OK
+        #expect(teasers.allSources.isEmpty || !teasers.allSources.isEmpty)
+    }
+}

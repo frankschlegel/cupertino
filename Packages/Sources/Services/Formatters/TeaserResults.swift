@@ -51,7 +51,9 @@ public struct TeaserResults: Sendable {
         public let emoji: String
         public let titles: [String]
 
-        public var isEmpty: Bool { titles.isEmpty }
+        public var isEmpty: Bool {
+            titles.isEmpty
+        }
     }
 
     /// Returns all non-empty sources as an iterable collection

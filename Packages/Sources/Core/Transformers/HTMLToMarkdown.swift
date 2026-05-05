@@ -20,7 +20,7 @@ import WebKit
 // File length: 580+ lines | Type body length: 400+ lines
 // Disabling: file_length (400 line limit), type_body_length (250 line limit)
 
-// Converts HTML documentation to clean Markdown
+/// Converts HTML documentation to clean Markdown
 public struct HTMLToMarkdown: ContentTransformer, @unchecked Sendable {
     public typealias RawContent = String
 
@@ -644,7 +644,8 @@ extension HTMLToMarkdown {
     public static func toStructuredPage(
         _ html: String,
         url: URL,
-        source: StructuredDocumentationPage.Source = .appleWebKit
+        source: StructuredDocumentationPage.Source = .appleWebKit,
+        depth: Int? = nil
     ) -> StructuredDocumentationPage? {
         // Extract title
         guard let title = extractTitle(from: html) else {
@@ -672,13 +673,14 @@ extension HTMLToMarkdown {
         // Extract sections (H2 headers and their content)
         let sections = extractSectionsFromHTML(from: html)
 
-        // Compute content hash
-        let contentHash = HashUtilities.sha256(of: html)
-
         // Generate markdown representation
         let markdown = convert(html, url: url)
 
-        return StructuredDocumentationPage(
+        // Hash canonical structured fields, not raw `html` — page bytes carry
+        // volatile cache/build metadata that doesn't reach our parsed output,
+        // so `sha256(of: html)` was non-deterministic across runs (#199).
+        let page = StructuredDocumentationPage(
+            id: StructuredDocumentationPage.deterministicID(for: url),
             url: url,
             title: title,
             kind: kind,
@@ -690,8 +692,10 @@ extension HTMLToMarkdown {
             codeExamples: codeExamples,
             rawMarkdown: markdown,
             crawledAt: Date(),
-            contentHash: contentHash
+            contentHash: "",
+            crawlDepth: depth
         )
+        return page.with(contentHash: page.canonicalContentHash)
     }
 
     // MARK: - Private Helpers for Structured Page

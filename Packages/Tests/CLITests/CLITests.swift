@@ -4,8 +4,8 @@ import Testing
 
 // MARK: - CLI Tests
 
-/// Tests for the Cupertino CLI entry point and configuration
-/// Focuses on command registration, configuration, and enum logic
+// Tests for the Cupertino CLI entry point and configuration
+// Focuses on command registration, configuration, and enum logic
 
 // MARK: - Command Registration Tests
 
@@ -15,11 +15,16 @@ struct CommandRegistrationTests {
     func subcommandsRegistered() {
         let config = Cupertino.configuration
 
-        #expect(config.subcommands.count == 13)
+        // 13 visible + 1 hidden (package-search). `setup` now owns every
+        // database — packages-setup was collapsed into it. `resolve-refs`
+        // post-processes saved pages against #208. `index` removed in
+        // #231 (samples now build via `save --samples`). `ask` absorbed
+        // into `search` in #239 (default fan-out path produces the same
+        // chunked output as `ask` did).
+        #expect(config.subcommands.count == 14)
         #expect(config.subcommands.contains { $0 == SetupCommand.self })
         #expect(config.subcommands.contains { $0 == FetchCommand.self })
         #expect(config.subcommands.contains { $0 == SaveCommand.self })
-        #expect(config.subcommands.contains { $0 == IndexCommand.self })
         #expect(config.subcommands.contains { $0 == ServeCommand.self })
         #expect(config.subcommands.contains { $0 == SearchCommand.self })
         #expect(config.subcommands.contains { $0 == ReadCommand.self })
@@ -29,6 +34,8 @@ struct CommandRegistrationTests {
         #expect(config.subcommands.contains { $0 == ReadSampleFileCommand.self })
         #expect(config.subcommands.contains { $0 == DoctorCommand.self })
         #expect(config.subcommands.contains { $0 == CleanupCommand.self })
+        #expect(config.subcommands.contains { $0 == PackageSearchCommand.self })
+        #expect(config.subcommands.contains { $0 == ResolveRefsCommand.self })
     }
 
     @Test("Default subcommand is ServeCommand")
@@ -61,22 +68,23 @@ struct CommandRegistrationTests {
 
 @Suite("FetchType Enum")
 struct FetchTypeTests {
+    /// After #217, .packageDocs was merged into .packages — there is no
+    /// separate "package-docs" fetch type any more.
+    private static let allTypes: [Cupertino.FetchType] = [
+        .docs,
+        .swift,
+        .evolution,
+        .packages,
+        .code,
+        .samples,
+        .archive,
+        .hig,
+        .all,
+    ]
+
     @Test("Display names are non-empty for all types")
     func displayNamesNonEmpty() {
-        let allTypes: [Cupertino.FetchType] = [
-            .docs,
-            .swift,
-            .evolution,
-            .packages,
-            .packageDocs,
-            .code,
-            .samples,
-            .archive,
-            .hig,
-            .all,
-        ]
-
-        for fetchType in allTypes {
+        for fetchType in Self.allTypes {
             #expect(
                 !fetchType.displayName.isEmpty,
                 "FetchType.\(fetchType) should have a non-empty display name"
@@ -87,20 +95,7 @@ struct FetchTypeTests {
     @Test("Output directories use home directory")
     func outputDirectoriesUseHome() {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-        let allTypes: [Cupertino.FetchType] = [
-            .docs,
-            .swift,
-            .evolution,
-            .packages,
-            .packageDocs,
-            .code,
-            .samples,
-            .archive,
-            .hig,
-            .all,
-        ]
-
-        for fetchType in allTypes {
+        for fetchType in Self.allTypes {
             let outputDir = fetchType.defaultOutputDir
             #expect(
                 outputDir.hasPrefix(homeDir),
@@ -111,20 +106,7 @@ struct FetchTypeTests {
 
     @Test("Output directories contain base directory name")
     func outputDirectoriesContainBase() {
-        let allTypes: [Cupertino.FetchType] = [
-            .docs,
-            .swift,
-            .evolution,
-            .packages,
-            .packageDocs,
-            .code,
-            .samples,
-            .archive,
-            .hig,
-            .all,
-        ]
-
-        for fetchType in allTypes {
+        for fetchType in Self.allTypes {
             let outputDir = fetchType.defaultOutputDir
             #expect(
                 outputDir.contains("cupertino"),
@@ -145,11 +127,12 @@ struct FetchTypeTests {
 
     @Test("Direct fetch types are correctly categorized")
     func directFetchTypes() {
+        // After #217: .packages now does both metadata + archives, so the
+        // separate .packageDocs case is gone. directFetch went from 7 → 6.
         let directFetch = Cupertino.FetchType.directFetchTypes
 
-        #expect(directFetch.count == 7)
+        #expect(directFetch.count == 6)
         #expect(directFetch.contains(.packages))
-        #expect(directFetch.contains(.packageDocs))
         #expect(directFetch.contains(.code))
         #expect(directFetch.contains(.samples))
         #expect(directFetch.contains(.archive))
@@ -167,29 +150,23 @@ struct FetchTypeTests {
 
         // All types except .all should be categorized
         let allCategorized = webCrawl.union(directFetch)
-        #expect(allCategorized.count == 10) // 3 web + 7 direct
+        #expect(allCategorized.count == 9) // 3 web + 6 direct (#217 dropped .packageDocs)
     }
 
     @Test("All types includes all categorized types")
     func allTypesComplete() {
         let allTypes = Cupertino.FetchType.allTypes
 
-        #expect(allTypes.count == 10)
+        #expect(allTypes.count == 9)
         #expect(allTypes.contains(.docs))
         #expect(allTypes.contains(.swift))
         #expect(allTypes.contains(.evolution))
         #expect(allTypes.contains(.packages))
-        #expect(allTypes.contains(.packageDocs))
         #expect(allTypes.contains(.code))
         #expect(allTypes.contains(.samples))
         #expect(allTypes.contains(.archive))
         #expect(allTypes.contains(.hig))
         #expect(allTypes.contains(.availability))
-    }
-
-    @Test("Package-docs raw value has hyphen")
-    func packageDocsRawValue() {
-        #expect(Cupertino.FetchType.packageDocs.rawValue == "package-docs")
     }
 
     @Test("Raw values match expected CLI arguments")
@@ -215,7 +192,6 @@ struct FetchTypeTests {
         // These types use different fetching mechanisms
         #expect(Cupertino.FetchType.evolution.defaultURL.isEmpty)
         #expect(Cupertino.FetchType.packages.defaultURL.isEmpty)
-        #expect(Cupertino.FetchType.packageDocs.defaultURL.isEmpty)
         #expect(Cupertino.FetchType.code.defaultURL.isEmpty)
         #expect(Cupertino.FetchType.all.defaultURL.isEmpty)
     }
@@ -234,12 +210,11 @@ struct FetchTypeTests {
         #expect(directories.count == types.count, "Each type should have a unique output directory")
     }
 
-    @Test("Packages and package-docs share base directory")
-    func packagesShareDirectory() {
-        let packagesDir = Cupertino.FetchType.packages.defaultOutputDir
-        let packageDocsDir = Cupertino.FetchType.packageDocs.defaultOutputDir
-
-        #expect(packagesDir == packageDocsDir, "Packages and package-docs should share the same directory")
+    @Test("packages display name surfaces the merged scope (#217)")
+    func packagesDisplayName() {
+        // Display name should mention "Package" so the user knows what's
+        // being fetched; specifics (metadata + archives) are in --help.
+        #expect(Cupertino.FetchType.packages.displayName.contains("Package"))
     }
 }
 
@@ -266,3 +241,6 @@ struct FetchTypeDisplayNameTests {
         #expect(docsName != swiftName)
     }
 }
+
+// SaveCommandPreflightTests was moved to Tests/IndexerTests/PreflightTests.swift
+// in #244. The preflight pipeline now lives in `Indexer.Preflight`.

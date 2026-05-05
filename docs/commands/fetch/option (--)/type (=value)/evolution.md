@@ -45,9 +45,15 @@ cupertino fetch --type evolution
 cupertino fetch --type evolution --only-accepted
 ```
 
-### Resume Interrupted Download
+### Resume Interrupted Download (automatic)
 ```bash
-cupertino fetch --type evolution --resume
+# Auto-resumes from metadata.json — no flag needed
+cupertino fetch --type evolution
+```
+
+### Discard the Saved Session and Start Over
+```bash
+cupertino fetch --type evolution --start-clean
 ```
 
 ### Force Re-download All Proposals
