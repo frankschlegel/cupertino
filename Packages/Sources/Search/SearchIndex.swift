@@ -83,6 +83,14 @@ extension Search {
                 throw SearchError.sqliteError("Failed to open database: \(errorMessage)")
             }
 
+            // Auto-retry on SQLITE_BUSY for up to 5 seconds so concurrent
+            // `cupertino search` invocations against the same DB don't fail
+            // immediately on transient lock contention. SQLite default is 0
+            // (fail on first contention). 5 s covers idempotent open-time
+            // writes (`PRAGMA user_version`, `CREATE TABLE IF NOT EXISTS`)
+            // when a sibling process is doing the same.
+            sqlite3_busy_timeout(dbPointer, 5000)
+
             database = dbPointer
         }
 
@@ -103,6 +111,17 @@ extension Search {
         private func setSchemaVersion() async throws {
             guard let database else {
                 throw SearchError.databaseNotInitialized
+            }
+
+            // Skip the write if the on-disk version already matches. Every
+            // `Search.Index.init` (i.e. every `cupertino search`) used to issue
+            // this PRAGMA unconditionally; on the steady-state path where the
+            // version is already correct, that write produced nothing useful
+            // but did require a write lock on the DB. Two concurrent searches
+            // would then contend (SQLite is single-writer) and one would fail
+            // with `database is locked`.
+            if getSchemaVersion() == Self.schemaVersion {
+                return
             }
 
             let sql = "PRAGMA user_version = \(Self.schemaVersion)"
