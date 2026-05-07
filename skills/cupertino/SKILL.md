@@ -1,12 +1,14 @@
 ---
 name: cupertino
-description: This skill should be used when working with Apple APIs, iOS/macOS/visionOS development, or Swift language questions. Covers searching Apple developer documentation, looking up SwiftUI views, finding UIKit APIs, reading Apple docs, browsing Swift Evolution proposals, checking Human Interface Guidelines, and exploring Apple sample code. Supports 300+ frameworks including SwiftUI, UIKit, Foundation, and Combine via offline search of 300,000+ documentation pages.
+description: This skill should be used when working with Apple APIs, iOS/macOS/visionOS development, or Swift language questions. Covers searching Apple developer documentation, looking up SwiftUI views, finding UIKit APIs, reading Apple docs, browsing Swift Evolution proposals, checking Human Interface Guidelines, and exploring Apple sample code. Supports 300+ frameworks including SwiftUI, UIKit, Foundation, and Combine via offline search of 405,000+ documentation pages.
 allowed-tools: Bash(cupertino *)
 ---
 
-# Cupertino - Apple Documentation Search
+# Cupertino: Apple Documentation Search
 
-Search 300,000+ Apple developer documentation pages offline.
+Search 405,000+ Apple developer documentation pages offline. Cupertino is a lexical search engine over Apple's docs, samples, HIG, Swift Evolution, Swift.org, the Swift book, and Swift package metadata. It returns deterministic, citable results, never hallucinations.
+
+**Your job (the LLM) is to translate the user's question into the right cupertino query, cite results in your answer, and verify everything you say traces back to a real Apple doc.**
 
 ## Setup
 
@@ -15,14 +17,145 @@ First-time setup (downloads ~2.4GB database):
 cupertino setup
 ```
 
-## Workflow
+If `cupertino setup` hasn't been run, do that first.
 
-To answer questions about Apple APIs, first search for relevant documents, then read the most relevant result:
+## Search strategy
 
-1. Search: `cupertino search "NavigationStack" --source apple-docs --format json`
-2. Read: `cupertino read "<uri-from-results>" --format markdown`
+Cupertino does exact lexical matching. **You handle the language understanding before calling it.**
 
-If the database is not set up, run `cupertino setup` first.
+### 1. Translate to canonical Apple terms before searching
+
+Users describe things by appearance, by UIKit muscle memory, or with typos. Cupertino indexes Apple's canonical names. Translate first; search second.
+
+**Common translations:**
+
+| User says | Likely SwiftUI | Likely UIKit | Likely AppKit |
+|---|---|---|---|
+| search bar / searchbar | `searchable` modifier | `UISearchBar` | `NSSearchField` |
+| text field | `TextField` | `UITextField` | `NSTextField` |
+| list view / table view | `List` | `UITableView` / `UICollectionView` | `NSTableView` |
+| segmented control | `Picker(.segmented)` | `UISegmentedControl` | `NSSegmentedControl` |
+| spinner / loading indicator | `ProgressView` | `UIActivityIndicatorView` | `NSProgressIndicator` |
+| alert | `.alert` modifier | `UIAlertController` | `NSAlert` |
+| modal / popup | `.sheet`, `.fullScreenCover` | `present(_:animated:)` | `NSWindow.beginSheet` |
+| switch / toggle | `Toggle` | `UISwitch` | `NSSwitch` |
+| stepper | `Stepper` | `UIStepper` | `NSStepper` |
+| web view | `WKWebView` (UIKit) | `WKWebView` | `WKWebView` |
+
+When you translate, **tell the user**: "Searching for `searchable` (SwiftUI equivalent of search bar)."
+
+### 2. Handle typos and "did you mean" yourself
+
+Cupertino does not fuzzy-match. If the user types `searchabe`, calling `cupertino search "searchabe"` will return weak results. **You** correct the typo first, then search:
+
+- `searchabe` → search for `searchable`
+- `unviewcontroller` → search for `UIViewController`
+- `tabel view` → search for `UITableView` or `List` (depending on framework)
+
+Use your knowledge of Apple naming conventions. If unsure, search for both the literal query and your guess; compare results.
+
+### 3. Infer the framework from context
+
+Use `--framework` to narrow when the framework is obvious:
+
+- Conversation about SwiftUI views → `--framework swiftui`
+- Symbol prefix `NS*` → `--framework appkit`
+- Symbol prefix `UI*` → `--framework uikit`
+- Symbol prefix `MK*` → `--framework mapkit`
+- File the user is editing imports a specific framework → use that
+
+If the framework is genuinely ambiguous, search without `--framework` and disambiguate from results.
+
+### 4. Prefer current API over deprecated
+
+Apple keeps deprecated symbols indexed. Lead with the current canonical:
+
+- `UIWebView` is deprecated → recommend `WKWebView`
+- `UISearchDisplayController` is deprecated → recommend `UISearchController`
+- `UITableView` for new code → recommend `UICollectionView` or SwiftUI `List`
+
+When you mention a deprecated symbol in your answer, flag it.
+
+### 5. Bare-name ambiguity: use specific function signatures when needed
+
+Bare-name queries can collide with namespaced symbols elsewhere in the index. Common collisions:
+
+- `searchable` → returns CoreSpotlight `CSSearchableIndex`, not the SwiftUI modifier. Use `searchable(text:` to find the modifier directly.
+- `View` → returns hits across many frameworks; prefer `View` with `--framework swiftui` and check the `metadata.framework` field on each candidate.
+- Common protocol names (`Identifiable`, `Codable`) hit the protocol page only when paired with a more specific term.
+
+When a bare-name query returns the wrong thing, try the function-signature form (`name(arg1:arg2:`) or pair the query with a distinguishing keyword.
+
+### 6. Recovery when results are weak
+
+If a search returns nothing useful:
+
+1. **Try a paradigm bridge**: if a UIKit name returned nothing in a SwiftUI context, search the SwiftUI canonical (and vice versa).
+2. **Try conceptual phrasing**: if `tableview` returns weak results, try `cupertino search "building list interfaces"` or `cupertino search "displaying a list of items"` to find Apple's conceptual pages. Descriptive queries often surface the right concept page.
+3. **Try the function-signature form**: `searchable(text:` instead of `searchable`.
+4. **Always tell the user what you tried**: "No direct hit for `searchbar`. Retried as `searchable(text:` (SwiftUI modifier), found 5 results."
+
+Never silently rewrite without telling the user what you did.
+
+### Per-source response shapes differ
+
+Filtered searches (`--source X`) return a **per-source dedicated view**, not the unified `candidates` shape. The unified search exists for cross-source ranking; the per-source views are for browsing one source's structured data.
+
+Shapes in v1.0.0:
+- **default** (no `--source`): `{candidates, contributingSources, question}`
+- **`--source apple-docs`**: top-level list of doc objects with `availability`, `framework`, `id`, `rank`
+- **`--source samples`**: `{files: [{filename, path, projectId, rank, snippet}]}`
+- **`--source hig`**: `{count, query, results: [{title, uri, summary, availability}]}`
+- **`--source apple-archive` / `swift-evolution` / `swift-org` / `swift-book`**: source-specific shapes
+
+If you parse JSON, expect different keys per source. The default unified search is the most consistent option when you don't need source-specific fields.
+
+### Known limitations as of v1.0.0
+
+These are gotchas worth knowing so you can route around them:
+
+- **`--source packages` returns 0 results** for every query, despite packages.db being 988 MB with 20186 indexed files. Workaround: use the default search (no `--source` filter); package docs ARE in `contributingSources` for the unified search. (Bug tracked separately.)
+- **Cross-paradigm bridge queries** like "swiftui equivalent of UITableView" may return release notes instead of migration guides. Workaround: search both frameworks separately and present the comparison yourself.
+- **Some descriptive queries miss** when phrasing diverges from Apple's wording. If `"how to display loading spinner"` misses, try `"ProgressView"` directly or `"loading interface"`.
+
+### 6. Migration / cross-paradigm queries
+
+If the user asks "SwiftUI equivalent of UITableView" or mentions migration:
+
+1. Search both frameworks
+2. Look for migration-guide pages (often titled "Migrating from X to Y")
+3. Present both: the new canonical (e.g., `List`) AND the old symbol the user knows (`UITableView`)
+
+## Citation and verification (do this for every answer)
+
+Cupertino's value is grounding. **Use it.**
+
+### Cite as you go
+
+For every API, framework, or concept you mention in your answer, name the cupertino URI it came from. Example:
+
+> Use `searchable(text:)` ([apple-docs://swiftui/view/searchable(text:)](apple-docs://swiftui/view/searchable(text:))) to add a search field to a SwiftUI view. The modifier was introduced in iOS 15.
+
+This costs you almost nothing in tokens (you're already typing the symbol name) and prevents hallucination because you can only cite what you actually retrieved.
+
+### Verify before sending
+
+Before finalizing your answer, scan it for every API/symbol you named. Each one must trace back to a URI you got from cupertino. If it doesn't:
+
+1. **Re-search to confirm it exists**: `cupertino search "<symbol>" --format json`
+2. **If still no hit**, mark it as uncertain in your answer ("I'm less sure about X; couldn't confirm in Apple docs") or remove it
+3. **Never fabricate** parameter names, return types, or platform availability
+
+### Token-efficient verification
+
+| Pattern | Cost | When to use |
+|---|---|---|
+| Cite as you go (no extra calls) | ~5% overhead | Always |
+| Re-search uncertain claims | 1 search call per claim (~500 tokens) | When you mention an API you don't 100% remember |
+| Full LLM verify pass | 1.5–2× baseline | High-stakes answers (production code, security) |
+| Wrong answer + user correction | 3–5× baseline | Worst case; avoid |
+
+The cite-as-you-go default is essentially free and prevents most hallucinations. Re-search for uncertain claims is cheap. Full verify passes are usually overkill.
 
 ## Commands
 
@@ -90,31 +223,65 @@ cupertino read-sample-file "foodtrucksampleapp" "FoodTruckApp.swift" --format js
 
 All commands support `--format` with these options:
 - `text` - Human-readable output (default for most commands)
-- `json` - Structured JSON for parsing
+- `json` - Structured JSON for parsing (use this when reasoning about results)
 - `markdown` - Formatted markdown
 
 ## Example JSON Output
 
+`cupertino search` returns:
+
 ```json
 {
-  "results": [
+  "candidates": [
     {
-      "uri": "apple-docs://swiftui/documentation_swiftui_vstack",
-      "title": "VStack",
-      "framework": "SwiftUI",
-      "summary": "A view that arranges its children vertically",
-      "source": "apple-docs"
+      "rank": 1,
+      "score": 0.91,
+      "title": "VStack | Apple Developer Documentation",
+      "identifier": "apple-docs://swiftui/documentation_swiftui_vstack",
+      "source": "apple-docs",
+      "metadata": {
+        "filePath": "https://developer.apple.com/documentation/SwiftUI/VStack",
+        "framework": "swiftui"
+      },
+      "chunk": "VStack | Apple Developer Documentation\n\nA view that arranges...",
+      "readFullCommand": "cupertino read apple-docs://swiftui/documentation_swiftui_vstack --source apple-docs"
     }
   ],
-  "count": 1,
-  "query": "VStack"
+  "contributingSources": ["packages", "samples", "apple-docs", "hig", "swift-evolution"],
+  "question": "VStack"
 }
 ```
+
+Use `identifier` (not `uri`) with `cupertino read`. Each candidate carries a `readFullCommand` field with the exact command pre-built.
+
+`cupertino read` returns:
+
+```json
+{
+  "id": "...",
+  "title": "VStack | Apple Developer Documentation",
+  "url": "https://developer.apple.com/documentation/swiftui/vstack",
+  "abstract": "A view that arranges its children vertically.",
+  "overview": "...",
+  "rawMarkdown": "---\nsource: ...\n...",
+  "declaration": {"code": "...", "language": "swift"},
+  "availability": [...],
+  "codeExamples": [...],
+  "sections": [...],
+  "kind": "structure",
+  "source": "appleWebKit",
+  "contentHash": "...",
+  "crawledAt": "2026-05-01T20:50:48Z"
+}
+```
+
+Note `framework` is encoded in the `url` path, not as a top-level field. The `source` field on `read` returns the crawler identifier (`appleWebKit`), not the cupertino source taxonomy from search.
 
 ## Tips
 
 - Use `--source` to narrow searches to a specific documentation source
 - Use `--framework` to filter by framework (e.g., swiftui, foundation, uikit)
-- Use `--limit` to control the number of results returned
+- Use `--limit` to control the number of results returned (default works well; 5–10 is plenty)
 - URIs from search results can be used directly with `cupertino read`
 - Legacy archive guides are excluded from search by default; add `--include-archive` to include them
+- Code examples in the indexed docs are usually more useful than descriptions for understanding API usage
